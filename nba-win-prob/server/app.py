@@ -22,10 +22,12 @@ class WinProbModel(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(input_dim, 64),
-            nn.ReLU(),
+            nn.BatchNorm1d(64),
+            nn.GELU(),
             nn.Dropout(0.2),
             nn.Linear(64, 32),
-            nn.ReLU(),
+            nn.BatchNorm1d(32),
+            nn.GELU(),
             nn.Linear(32, 1),
             nn.Sigmoid()
         )
@@ -42,7 +44,7 @@ def load_model():
     We call this once when the server starts, not on every request.
     """
     model = WinProbModel(input_dim=len(FEATURE_COLS))
-    model.load_state_dict(torch.load(MODEL_PATH, map_location="cpu"))
+    model.load_state_dict(torch.load(MODEL_PATH, map_location="cpu", weights_only=True))
     model.eval()
     print(f"[MODEL] Loaded from {MODEL_PATH}")
     return model

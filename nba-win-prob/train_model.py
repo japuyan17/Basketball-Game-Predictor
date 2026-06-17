@@ -60,10 +60,12 @@ class WinProbModel(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(input_dim, 64),
-            nn.ReLU(),
+            nn.BatchNorm1d(64),
+            nn.GELU(),
             nn.Dropout(0.2),
             nn.Linear(64, 32),
-            nn.ReLU(),
+            nn.BatchNorm1d(32),
+            nn.GELU(),
             nn.Linear(32, 1),
             nn.Sigmoid()
         )
@@ -211,7 +213,7 @@ def evaluate(model, X_val, y_val):
     print(f"  Log-loss : {loss:.4f}")
  
     # ── Calibration curve ─────────────────────────────────────────────────────
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+    _, axes = plt.subplots(1, 2, figsize=(12, 4))
  
     frac_pos, mean_pred = calibration_curve(y_val, probs, n_bins=10)
     axes[0].plot(mean_pred, frac_pos, "s-", label="Model", color="#185FA5")
@@ -265,7 +267,7 @@ def main():
     np.random.seed(RANDOM_SEED)
  
     # 1. Load data
-    X_train, X_val, y_train, y_val, scaler = load_data()
+    X_train, X_val, y_train, y_val, _ = load_data()
  
     # 2. Baseline
     baseline_acc, baseline_loss = run_baseline(X_train, X_val, y_train, y_val)
@@ -288,7 +290,7 @@ def main():
     plot_training_curves(train_losses, val_losses)
  
     # 7. Load best saved weights and evaluate
-    model.load_state_dict(torch.load(MODEL_PATH))
+    model.load_state_dict(torch.load(MODEL_PATH, weights_only=True))
     nn_acc, nn_loss = evaluate(model, X_val, y_val)
  
     # 8. Final comparison
