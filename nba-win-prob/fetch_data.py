@@ -1,7 +1,7 @@
 import time
 import os
 import pandas as pd
-from nba_api.stats.endpoints import LeagueGameFinder, PlayByPlayV2
+from nba_api.stats.endpoints import LeagueGameFinder, PlayByPlayV3
  
 # ── Settings ────────────────────────────────────────────────────────────────
 SEASONS = ["2018-19", "2019-20", "2020-21", "2021-22", "2022-23", "2023-24"]
@@ -26,7 +26,7 @@ def fetch_game_ids(season):
 
 def fetch_pbp(game_id):
     time.sleep(SLEEP_SECONDS)
-    pbp = PlayByPlayV2(game_id=game_id)
+    pbp = PlayByPlayV3(game_id=game_id)
     return pbp.get_data_frames()[0]
  
  

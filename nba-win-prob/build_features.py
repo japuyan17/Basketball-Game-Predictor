@@ -1,47 +1,37 @@
 import os
+import re
 import pandas as pd
 import numpy as np
- 
+
 # ── Settings ─────────────────────────────────────────────────────────────────
 DATA_DIR    = "data"
 SEASONS     = ["2018-19", "2019-20", "2020-21", "2021-22", "2022-23", "2023-24"]
 OUT_PATH    = os.path.join(DATA_DIR, "features.parquet")
  
-# ── Helper: parse time string → total seconds remaining in game ───────────────
-def parse_time(pctimestring, period):
+# ── Helper: parse V3 clock string → total seconds remaining in game ───────────
+def parse_clock(clock_str, period):
     """
-    Converts "8:42" in period 3 → total seconds left in the game.
-    Regulation = 4 periods of 720 seconds each.
-    Overtime periods are 300 seconds each.
+    Converts a V3 clock like "PT08M42.00S" (8:42 left in the period) into total
+    seconds left in the game. Regulation periods are 720s; in overtime only the
+    seconds left in the current OT period are used. Returns None if unparseable.
     """
     try:
-        mins, secs = map(int, str(pctimestring).split(":"))
+        match = re.match(r"PT0*(\d+)M0*([\d.]+)S", str(clock_str))
+        if not match:
+            return None
+        mins = int(match.group(1))
+        secs = float(match.group(2))
         secs_left_in_period = mins * 60 + secs
         if period <= 4:
             periods_left = max(0, 4 - period)
             return periods_left * 720 + secs_left_in_period
         else:
-            # overtime: each OT period is 5 minutes
+            # overtime: clock already reflects time left in the OT period
             return secs_left_in_period
     except:
         return None
- 
- 
-# ── Helper: parse score string → home minus away ──────────────────────────────
-def parse_score(score_str):
-    """
-    Converts "47 - 52" → 5  (home team leading by 5).
-    Returns None if the string is missing.
-    """
-    try:
-        if pd.isna(score_str):
-            return None
-        away, home = score_str.split(" - ")
-        return int(home) - int(away)
-    except:
-        return None
- 
- 
+
+
 # ── Core: build features for one game ────────────────────────────────────────
 def build_features(df):
     """
@@ -57,22 +47,24 @@ def build_features(df):
     """
     df = df.copy().reset_index(drop=True)
  
-    # ── Score differential ────────────────────────────────────────────────────
-    df["score_diff"] = df["SCORE"].apply(parse_score)
-    df["score_diff"] = df["score_diff"].ffill().fillna(0).astype(float)
- 
+    # ── Score differential (V3: separate home/away score columns) ─────────────
+    home_score = pd.to_numeric(df["scoreHome"], errors="coerce").ffill().fillna(0)
+    away_score = pd.to_numeric(df["scoreAway"], errors="coerce").ffill().fillna(0)
+    df["score_diff"] = (home_score - away_score).astype(float)
+
     # ── Time remaining ────────────────────────────────────────────────────────
     df["secs_left"] = df.apply(
-        lambda r: parse_time(r["PCTIMESTRING"], r["PERIOD"]), axis=1
+        lambda r: parse_clock(r["clock"], r["period"]), axis=1
     )
     df["secs_left"] = df["secs_left"].ffill().fillna(0).astype(float)
- 
+
     # ── Period ────────────────────────────────────────────────────────────────
-    df["period"] = df["PERIOD"].fillna(1).astype(int)
- 
-    # ── Foul differential ─────────────────────────────────────────────────────
-    home_fouls = df["HOMEDESCRIPTION"].str.contains("FOUL", case=False, na=False).cumsum()
-    away_fouls = df["VISITORDESCRIPTION"].str.contains("FOUL", case=False, na=False).cumsum()
+    df["period"] = df["period"].fillna(1).astype(int)
+
+    # ── Foul differential (V3: one description column + h/v location) ─────────
+    is_foul = df["description"].str.contains("FOUL", case=False, na=False)
+    home_fouls = (is_foul & (df["location"] == "h")).cumsum()
+    away_fouls = (is_foul & (df["location"] == "v")).cumsum()
     df["home_foul_diff"] = (home_fouls - away_fouls).astype(float)
  
     # ── Momentum (score diff change over last 5 events) ───────────────────────
