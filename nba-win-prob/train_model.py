@@ -1,28 +1,33 @@
 import os
 import numpy as np
-import pandas as pd
 import matplotlib.pyplot as plt
 
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
+from torch.nn.utils.rnn import pack_padded_sequence
 
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, log_loss
+from sklearn.metrics import (
+    accuracy_score, log_loss, confusion_matrix,
+    ConfusionMatrixDisplay, brier_score_loss,
+)
 from sklearn.preprocessing import StandardScaler
 from sklearn.calibration import calibration_curve
 
 # ── Settings ──────────────────────────────────────────────────────────────────
-DATA_PATH   = "data/features.parquet"
+DATA_PATH   = "data/sequences.npz"
 MODEL_DIR   = "models"
 MODEL_PATH  = os.path.join(MODEL_DIR, "best_model.pt")
 SCALER_PATH = os.path.join(MODEL_DIR, "scaler.npy")
 
-FEATURE_COLS = ["score_diff", "secs_left", "period", "home_foul_diff", "momentum"]
-LABEL_COL    = "home_win"
+N_FEATURES    = 5
+HIDDEN_SIZE   = 128
+NUM_LAYERS    = 2
+DROPOUT       = 0.3
 
-BATCH_SIZE    = 256
+BATCH_SIZE    = 128
 EPOCHS        = 1000
 LEARNING_RATE = 1e-3
 VAL_SPLIT     = 0.2
@@ -30,109 +35,163 @@ RANDOM_SEED   = 42
 PATIENCE      = 20
 
 
-# ── 1. Dataset class ──────────────────────────────────────────────────────────
+# ── 1. Dataset ────────────────────────────────────────────────────────────────
 class WinProbDataset(Dataset):
-    """Wraps numpy arrays into a PyTorch Dataset for use with DataLoader."""
+    """Wraps padded game sequences, labels, and true lengths for the LSTM."""
 
-    def __init__(self, X, y):
-        self.X = torch.tensor(X, dtype=torch.float32)
-        self.y = torch.tensor(y, dtype=torch.float32).unsqueeze(1)
+    def __init__(self, X, y, lengths):
+        self.X       = torch.tensor(X,       dtype=torch.float32)
+        self.y       = torch.tensor(y,       dtype=torch.float32)
+        self.lengths = torch.tensor(lengths, dtype=torch.long)
 
     def __len__(self):
-        return len(self.X)
+        return len(self.y)
 
     def __getitem__(self, i):
-        return self.X[i], self.y[i]
+        return self.X[i], self.y[i], self.lengths[i]
 
 
-# ── 2. Model architecture ─────────────────────────────────────────────────────
+# ── 2. Model ──────────────────────────────────────────────────────────────────
 class WinProbModel(nn.Module):
     """
-    MLP with 3 linear layers, BatchNorm, GELU, and Dropout.
+    Two-layer LSTM followed by a single linear classifier.
 
-    Input (5 features)
-      → Linear(5→64) → BatchNorm → GELU → Dropout(0.2)
-      → Linear(64→32) → BatchNorm → GELU
-      → Linear(32→1) → Sigmoid
+    Input  : (batch, seq_len, 5) padded sequences
+    LSTM   : hidden_size=128, num_layers=2, dropout=0.3
+    Output : (batch, 1) win probability via Sigmoid
+
+    The LSTM reads each game play-by-play in order. Only the hidden state at
+    the last real play (not padding) is passed to the classifier, so the model
+    learns from the full temporal context of each game.
     """
 
-    def __init__(self, input_dim=5):
+    def __init__(
+        self,
+        input_size  = N_FEATURES,
+        hidden_size = HIDDEN_SIZE,
+        num_layers  = NUM_LAYERS,
+        dropout     = DROPOUT,
+    ):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, 64),
-            nn.BatchNorm1d(64),
-            nn.GELU(),
-            nn.Dropout(0.2),
-            nn.Linear(64, 32),
-            nn.BatchNorm1d(32),
-            nn.GELU(),
-            nn.Linear(32, 1),
-            nn.Sigmoid()
+        self.lstm = nn.LSTM(
+            input_size  = input_size,
+            hidden_size = hidden_size,
+            num_layers  = num_layers,
+            batch_first = True,
+            dropout     = dropout if num_layers > 1 else 0.0,
+        )
+        self.classifier = nn.Sequential(
+            nn.Linear(hidden_size, 1),
+            nn.Sigmoid(),
         )
 
-    def forward(self, x):
-        return self.net(x)
+    def forward(self, x, lengths):
+        # Pack so the LSTM skips padding positions entirely
+        packed        = pack_padded_sequence(
+            x, lengths.cpu(), batch_first=True, enforce_sorted=False
+        )
+        _, (hidden, _) = self.lstm(packed)
+        # hidden: (num_layers, batch, hidden_size) — take the top layer
+        last_hidden   = hidden[-1]
+        return self.classifier(last_hidden)
 
 
 # ── 3. Load and prepare data ──────────────────────────────────────────────────
 def load_data():
-    """Loads features.parquet, splits into train/val, and fits a scaler."""
-    print("[LOADING] Reading features.parquet...")
-    df = pd.read_parquet(DATA_PATH).dropna(subset=FEATURE_COLS + [LABEL_COL])
+    """
+    Loads sequences.npz, splits by game into train/val, and fits a scaler
+    on the non-padded training timesteps only.
+    """
+    print("[LOADING] Reading sequences.npz...")
+    data    = np.load(DATA_PATH)
+    X       = data["X"]          # (n_games, max_seq_len, n_features)
+    y       = data["y"]          # (n_games,)
+    lengths = data["lengths"]    # (n_games,)
 
-    print(f"  Total rows   : {len(df):,}")
-    print(f"  Home win rate: {df[LABEL_COL].mean():.1%}")
+    n_games = len(y)
+    print(f"  Games        : {n_games:,}")
+    print(f"  X shape      : {X.shape}")
+    print(f"  Home win rate: {y.mean():.1%}")
 
-    X = df[FEATURE_COLS].values.astype(np.float32)
-    y = df[LABEL_COL].values.astype(np.float32)
-
-    X_train, X_val, y_train, y_val = train_test_split(
-        X, y, test_size=VAL_SPLIT, random_state=RANDOM_SEED
+    # Split by game index so no game leaks across train/val
+    idx = np.arange(n_games)
+    train_idx, val_idx = train_test_split(
+        idx, test_size=VAL_SPLIT, random_state=RANDOM_SEED
     )
 
+    X_train, X_val         = X[train_idx],       X[val_idx]
+    y_train, y_val         = y[train_idx],        y[val_idx]
+    lengths_train, lengths_val = lengths[train_idx], lengths[val_idx]
+
+    # Fit scaler on non-padded training timesteps only
+    train_mask = np.zeros(
+        (len(X_train), X_train.shape[1]), dtype=bool
+    )
+    for i, l in enumerate(lengths_train):
+        train_mask[i, :l] = True
+
     scaler  = StandardScaler()
-    X_train = scaler.fit_transform(X_train)
-    X_val   = scaler.transform(X_val)
+    scaler.fit(X_train[train_mask])
+
+    # Apply scaling to all timesteps (padding is ignored by pack_padded_sequence)
+    X_train = scaler.transform(
+        X_train.reshape(-1, N_FEATURES)
+    ).reshape(X_train.shape)
+    X_val = scaler.transform(
+        X_val.reshape(-1, N_FEATURES)
+    ).reshape(X_val.shape)
 
     np.save(SCALER_PATH, np.array([scaler.mean_, scaler.scale_]))
     print(f"  Scaler saved to {SCALER_PATH}")
-    print(f"  Train rows   : {len(X_train):,}")
-    print(f"  Val rows     : {len(X_val):,}")
+    print(f"  Train games  : {len(X_train):,}")
+    print(f"  Val games    : {len(X_val):,}")
 
-    return X_train, X_val, y_train, y_val, scaler
+    return X_train, X_val, y_train, y_val, lengths_train, lengths_val
 
 
 # ── 4. Logistic regression baseline ──────────────────────────────────────────
-def run_baseline(X_train, X_val, y_train, y_val):
-    """Fits logistic regression as a performance floor for the neural net."""
-    print("\n[BASELINE] Logistic Regression...")
-    lr    = LogisticRegression(max_iter=1000)
-    lr.fit(X_train, y_train)
+def run_baseline(X_train, X_val, y_train, y_val, lengths_train, lengths_val):
+    """
+    Fits logistic regression on mean-pooled features per game as a baseline.
+    Mean-pooling collapses each game's sequence into one feature vector.
+    """
+    print("\n[BASELINE] Logistic Regression (mean-pooled features)...")
 
-    preds = lr.predict(X_val)
-    probs = lr.predict_proba(X_val)[:, 1]
+    def mean_pool(X, lengths):
+        pooled = np.zeros((len(X), N_FEATURES), dtype=np.float32)
+        for i, l in enumerate(lengths):
+            pooled[i] = X[i, :l].mean(axis=0)
+        return pooled
+
+    X_train_pooled = mean_pool(X_train, lengths_train)
+    X_val_pooled   = mean_pool(X_val,   lengths_val)
+
+    lr    = LogisticRegression(max_iter=1000)
+    lr.fit(X_train_pooled, y_train)
+
+    preds = lr.predict(X_val_pooled)
+    probs = lr.predict_proba(X_val_pooled)[:, 1]
     acc   = accuracy_score(y_val, preds)
     loss  = log_loss(y_val, probs)
 
     print(f"  Accuracy : {acc:.4f}  ({acc:.1%})")
     print(f"  Log-loss : {loss:.4f}")
-    print(f"  (Neural net needs to beat both of these)")
+    print(f"  (LSTM needs to beat both of these)")
     return acc, loss
 
 
 # ── 5. Training loop ──────────────────────────────────────────────────────────
 def train(model, train_dl, val_dl, optimizer, criterion):
     """
-    Trains for up to EPOCHS epochs; stops early if val loss doesn't improve
-    for PATIENCE consecutive epochs. Saves the training curve graph on exit
-    regardless of whether the loop finishes, early-stops, or is interrupted.
+    Trains for up to EPOCHS epochs with early stopping after PATIENCE epochs
+    of no val-loss improvement. Saves the training curve on any exit.
     """
     train_losses      = []
     val_losses        = []
     best_val_loss     = float("inf")
     epochs_no_improve = 0
 
-    print(f"\n[TRAINING] {EPOCHS} epochs, batch size {BATCH_SIZE}, "
+    print(f"\n[TRAINING] {EPOCHS} epochs, batch {BATCH_SIZE}, "
           f"patience {PATIENCE}...")
     print(f"  {'Epoch':>5}  {'Train Loss':>10}  {'Val Loss':>10}  {'Saved':>6}")
     print(f"  {'-'*5}  {'-'*10}  {'-'*10}  {'-'*6}")
@@ -143,9 +202,9 @@ def train(model, train_dl, val_dl, optimizer, criterion):
             # ── Training phase ────────────────────────────────────────────────
             model.train()
             batch_losses = []
-            for X_batch, y_batch in train_dl:
+            for X_batch, y_batch, len_batch in train_dl:
                 optimizer.zero_grad()
-                preds = model(X_batch)
+                preds = model(X_batch, len_batch).squeeze(1)
                 loss  = criterion(preds, y_batch)
                 loss.backward()
                 optimizer.step()
@@ -158,8 +217,8 @@ def train(model, train_dl, val_dl, optimizer, criterion):
             model.eval()
             val_batch_losses = []
             with torch.no_grad():
-                for X_batch, y_batch in val_dl:
-                    preds = model(X_batch)
+                for X_batch, y_batch, len_batch in val_dl:
+                    preds = model(X_batch, len_batch).squeeze(1)
                     loss  = criterion(preds, y_batch)
                     val_batch_losses.append(loss.item())
 
@@ -181,11 +240,10 @@ def train(model, train_dl, val_dl, optimizer, criterion):
                 f"{val_loss:>10.4f}  {saved:>6}"
             )
 
-            # ── Early stopping ────────────────────────────────────────────────
             if epochs_no_improve >= PATIENCE:
                 print(
-                    f"\n  [EARLY STOP] Val loss didn't improve for "
-                    f"{PATIENCE} epochs. Stopping at epoch {epoch}."
+                    f"\n  [EARLY STOP] No improvement for {PATIENCE} epochs. "
+                    f"Stopping at epoch {epoch}."
                 )
                 break
 
@@ -195,7 +253,7 @@ def train(model, train_dl, val_dl, optimizer, criterion):
             "saving graphs from completed epochs..."
         )
 
-    print(f"\n  Best val loss: {best_val_loss:.4f}")
+    print(f"\n  Best val loss : {best_val_loss:.4f}")
     print(f"  Model saved to {MODEL_PATH}")
 
     if train_losses:
@@ -205,26 +263,31 @@ def train(model, train_dl, val_dl, optimizer, criterion):
 
 
 # ── 6. Evaluation ─────────────────────────────────────────────────────────────
-def evaluate(model, X_val, y_val):
+def evaluate(model, X_val, y_val, lengths_val):
     """
-    Measures accuracy and log-loss, then saves calibration and distribution
-    charts to models/evaluation.png.
+    Reports accuracy, log-loss, and Brier score, then saves a three-panel
+    evaluation chart (calibration curve, prediction distribution, confusion
+    matrix) to models/evaluation.png.
     """
     model.eval()
-    X_tensor = torch.tensor(X_val, dtype=torch.float32)
+    X_tensor   = torch.tensor(X_val,       dtype=torch.float32)
+    len_tensor = torch.tensor(lengths_val, dtype=torch.long)
+
     with torch.no_grad():
-        probs = model(X_tensor).numpy().flatten()
+        probs = model(X_tensor, len_tensor).squeeze(1).numpy()
 
     preds = (probs >= 0.5).astype(int)
-    acc   = accuracy_score(y_val, preds)
-    loss  = log_loss(y_val, probs)
+    acc   = accuracy_score(y_val,  preds)
+    loss  = log_loss(y_val,        probs)
+    brier = brier_score_loss(y_val, probs)
 
-    print(f"\n[EVALUATION] Neural Network on validation set:")
-    print(f"  Accuracy : {acc:.4f}  ({acc:.1%})")
-    print(f"  Log-loss : {loss:.4f}")
+    print(f"\n[EVALUATION] LSTM on validation set:")
+    print(f"  Accuracy    : {acc:.4f}  ({acc:.1%})")
+    print(f"  Log-loss    : {loss:.4f}")
+    print(f"  Brier score : {brier:.4f}  (lower = better, 0.25 = random)")
 
     # ── Calibration curve ─────────────────────────────────────────────────────
-    _, axes = plt.subplots(1, 2, figsize=(12, 4))
+    _, axes = plt.subplots(1, 3, figsize=(18, 4))
 
     frac_pos, mean_pred = calibration_curve(y_val, probs, n_bins=10)
     axes[0].plot(mean_pred, frac_pos, "s-", label="Model", color="#185FA5")
@@ -242,12 +305,20 @@ def evaluate(model, X_val, y_val):
     axes[1].set_title("Distribution of predictions")
     axes[1].grid(alpha=0.3)
 
+    # ── Confusion matrix ──────────────────────────────────────────────────────
+    cm   = confusion_matrix(y_val, preds)
+    disp = ConfusionMatrixDisplay(
+        confusion_matrix=cm, display_labels=["Away Win", "Home Win"]
+    )
+    disp.plot(ax=axes[2], colorbar=False, cmap="Blues")
+    axes[2].set_title("Confusion matrix")
+
     plt.tight_layout()
     plt.savefig("models/evaluation.png", dpi=150)
     plt.show()
     print("  Evaluation chart saved to models/evaluation.png")
 
-    return acc, loss
+    return acc, loss, brier
 
 
 # ── 7. Training curve plot ────────────────────────────────────────────────────
@@ -269,53 +340,56 @@ def plot_training_curves(train_losses, val_losses):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
-    """Orchestrates data loading, baseline, training, and evaluation."""
+    """Orchestrates data loading, baseline, LSTM training, and evaluation."""
     os.makedirs(MODEL_DIR, exist_ok=True)
     torch.manual_seed(RANDOM_SEED)
     np.random.seed(RANDOM_SEED)
 
     # 1. Load data
-    X_train, X_val, y_train, y_val, _ = load_data()
+    X_train, X_val, y_train, y_val, lengths_train, lengths_val = load_data()
 
     # 2. Baseline
-    baseline_acc, baseline_loss = run_baseline(X_train, X_val, y_train, y_val)
+    baseline_acc, baseline_loss = run_baseline(
+        X_train, X_val, y_train, y_val, lengths_train, lengths_val
+    )
 
-    # 3. Build DataLoaders
-    train_ds = WinProbDataset(X_train, y_train)
-    val_ds   = WinProbDataset(X_val,   y_val)
+    # 3. DataLoaders
+    train_ds = WinProbDataset(X_train, y_train, lengths_train)
+    val_ds   = WinProbDataset(X_val,   y_val,   lengths_val)
     train_dl = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
     val_dl   = DataLoader(val_ds,   batch_size=BATCH_SIZE)
 
-    # 4. Build model, optimizer, loss function
-    model     = WinProbModel(input_dim=len(FEATURE_COLS))
+    # 4. Model, optimizer, loss
+    model     = WinProbModel()
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
     criterion = nn.BCELoss()
 
     # 5. Train (graphs saved inside train() on any exit)
     _, _ = train(model, train_dl, val_dl, optimizer, criterion)
 
-    # 6. Load best saved weights and evaluate
+    # 6. Load best weights and evaluate
     model.load_state_dict(torch.load(MODEL_PATH, weights_only=True))
-    nn_acc, nn_loss = evaluate(model, X_val, y_val)
+    nn_acc, nn_loss, nn_brier = evaluate(model, X_val, y_val, lengths_val)
 
-    # 7. Final comparison
+    # 7. Summary
     print(f"\n[SUMMARY]")
-    print(f"  {'':20s}  {'Accuracy':>10}  {'Log-loss':>10}")
-    print(f"  {'-'*20}  {'-'*10}  {'-'*10}")
+    print(f"  {'':20s}  {'Accuracy':>10}  {'Log-loss':>10}  {'Brier':>8}")
+    print(f"  {'-'*20}  {'-'*10}  {'-'*10}  {'-'*8}")
     print(f"  {'Logistic Regression':20s}  {baseline_acc:>10.4f}  "
-          f"{baseline_loss:>10.4f}")
-    print(f"  {'Neural Network':20s}  {nn_acc:>10.4f}  {nn_loss:>10.4f}")
+          f"{baseline_loss:>10.4f}  {'N/A':>8}")
+    print(f"  {'LSTM':20s}  {nn_acc:>10.4f}  "
+          f"{nn_loss:>10.4f}  {nn_brier:>8.4f}")
+
     improvement = nn_acc - baseline_acc
     print(
-        f"\n  Neural net "
-        f"{'outperforms' if improvement > 0 else 'underperforms'} "
+        f"\n  LSTM {'outperforms' if improvement > 0 else 'underperforms'} "
         f"baseline by {abs(improvement):.2%}"
     )
 
     if improvement <= 0:
-        print("  Tip: try adding more features in build_features.py")
+        print("  Tip: try increasing HIDDEN_SIZE or NUM_LAYERS")
     else:
-        print("  Model is ready — run server/app.py next!")
+        print("  Model is ready — update server/app.py with the LSTM architecture!")
 
 
 if __name__ == "__main__":
