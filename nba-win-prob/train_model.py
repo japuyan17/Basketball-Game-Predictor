@@ -28,11 +28,12 @@ NUM_LAYERS    = 2
 DROPOUT       = 0.3
 
 BATCH_SIZE    = 128
-EPOCHS        = 1000
+EPOCHS        = 30
 LEARNING_RATE = 1e-3
 VAL_SPLIT     = 0.2
 RANDOM_SEED   = 42
 PATIENCE      = 20
+DEVICE        = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 # ── 1. Dataset ────────────────────────────────────────────────────────────────
@@ -203,6 +204,8 @@ def train(model, train_dl, val_dl, optimizer, criterion):
             model.train()
             batch_losses = []
             for X_batch, y_batch, len_batch in train_dl:
+                X_batch = X_batch.to(DEVICE)
+                y_batch = y_batch.to(DEVICE)
                 optimizer.zero_grad()
                 preds = model(X_batch, len_batch).squeeze(1)
                 loss  = criterion(preds, y_batch)
@@ -218,6 +221,8 @@ def train(model, train_dl, val_dl, optimizer, criterion):
             val_batch_losses = []
             with torch.no_grad():
                 for X_batch, y_batch, len_batch in val_dl:
+                    X_batch = X_batch.to(DEVICE)
+                    y_batch = y_batch.to(DEVICE)
                     preds = model(X_batch, len_batch).squeeze(1)
                     loss  = criterion(preds, y_batch)
                     val_batch_losses.append(loss.item())
@@ -274,7 +279,7 @@ def evaluate(model, X_val, y_val, lengths_val):
     len_tensor = torch.tensor(lengths_val, dtype=torch.long)
 
     with torch.no_grad():
-        probs = model(X_tensor, len_tensor).squeeze(1).numpy()
+        probs = model(X_tensor.to(DEVICE), len_tensor).squeeze(1).cpu().numpy()
 
     preds = (probs >= 0.5).astype(int)
     acc   = accuracy_score(y_val,  preds)
@@ -344,6 +349,7 @@ def main():
     os.makedirs(MODEL_DIR, exist_ok=True)
     torch.manual_seed(RANDOM_SEED)
     np.random.seed(RANDOM_SEED)
+    print(f"[DEVICE] Using: {DEVICE}")
 
     # 1. Load data
     X_train, X_val, y_train, y_val, lengths_train, lengths_val = load_data()
@@ -360,7 +366,7 @@ def main():
     val_dl   = DataLoader(val_ds,   batch_size=BATCH_SIZE)
 
     # 4. Model, optimizer, loss
-    model     = WinProbModel()
+    model     = WinProbModel().to(DEVICE)
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
     criterion = nn.BCELoss()
 
