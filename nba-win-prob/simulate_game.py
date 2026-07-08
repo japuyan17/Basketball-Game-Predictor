@@ -11,6 +11,8 @@ STAT_ROWS = [
     ("Last 10 Win %", "last10_win_pct",    ".1%"),
     ("Home Win %",    "home_game_win_pct", ".1%"),
     ("Away Win %",    "away_game_win_pct", ".1%"),
+    ("Off Efficiency","off_efficiency",    ".1f"),
+    ("TOV Rate",      "tov_rate",          ".1f"),
 ]
 
 
@@ -57,7 +59,7 @@ def print_prediction(result, away_stats, home_stats):
     print("─" * 58)
     print(f"  [{bar}]")
     print(f"  {away:<26}    {home:>26}")
-    print(f"  {away_prob:.1%:<26}    {home_prob:>25.1%}")
+    print(f"  {f'{away_prob:.1%}':<26}    {f'{home_prob:.1%}':>25}")
     print("─" * 58)
 
     winner = home if home_prob > 0.5 else away

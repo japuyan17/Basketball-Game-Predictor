@@ -35,11 +35,12 @@ LABEL_COL   = "home_win"
 N_FEATURES  = len(FEATURE_COLS)
 
 BATCH_SIZE    = 256
-EPOCHS        = 1000
+EPOCHS        = 500
 LEARNING_RATE = 1e-4
 VAL_SPLIT     = 0.2
-RANDOM_SEED   = 42
-PATIENCE      = 20
+RANDOM_SEED      = 42
+LABEL_SMOOTHING  = 0.1   # smooths 0→0.05, 1→0.95 to prevent overconfidence
+# PATIENCE      = 20
 
 
 # ── 1. Dataset ────────────────────────────────────────────────────────────────
@@ -57,21 +58,25 @@ class MatchupDataset(Dataset):
         return self.X[i], self.y[i]
 
 
-# ── 2. Model: two-hidden-layer MLP with BatchNorm ────────────────────────────
+# ── 2. Model: three-hidden-layer MLP with BatchNorm ──────────────────────────
 class WinProbModel(nn.Module):
-    """Two hidden layers with BatchNorm, ReLU, and Dropout; outputs a win prob."""
+    """Three hidden layers with BatchNorm, ReLU, and Dropout; outputs a win prob."""
 
     def __init__(self, input_dim=N_FEATURES):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(input_dim, 64),
-            nn.BatchNorm1d(64),
+            nn.Linear(input_dim, 128),
+            nn.BatchNorm1d(128),
             nn.ReLU(),
             nn.Dropout(0.3),
+            nn.Linear(128, 64),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            nn.Dropout(0.2),
             nn.Linear(64, 32),
             nn.BatchNorm1d(32),
             nn.ReLU(),
-            nn.Dropout(0.2),
+            nn.Dropout(0.1),
             nn.Linear(32, 1),
             nn.Sigmoid(),
         )
@@ -111,16 +116,15 @@ def load_data():
 # ── 4. Training loop ──────────────────────────────────────────────────────────
 def train(model, train_dl, val_dl, optimizer, criterion, scheduler):
     """
-    Trains for up to EPOCHS epochs with early stopping and ReduceLROnPlateau.
-    Saves the best checkpoint and training curves on any exit path.
+    Trains for EPOCHS epochs with ReduceLROnPlateau. Saves the best val-loss
+    checkpoint to MODEL_PATH and plots training curves on any exit path.
     """
     train_losses      = []
     val_losses        = []
-    best_val_loss     = float("inf")
-    epochs_no_improve = 0
+    best_val_loss = float("inf")
 
     print(f"\n[TRAINING] {EPOCHS} epochs, batch {BATCH_SIZE}, "
-          f"lr {LEARNING_RATE}, patience {PATIENCE}...")
+          f"lr {LEARNING_RATE} (early stopping disabled)...")
     print(f"  {'Epoch':>5}  {'Train Loss':>10}  {'Val Loss':>10}  "
           f"{'LR':>8}  {'Saved':>6}")
     print(f"  {'-'*5}  {'-'*10}  {'-'*10}  {'-'*8}  {'-'*6}")
@@ -133,8 +137,9 @@ def train(model, train_dl, val_dl, optimizer, criterion, scheduler):
             batch_losses = []
             for X_batch, y_batch in train_dl:
                 optimizer.zero_grad()
-                preds = model(X_batch)
-                loss  = criterion(preds, y_batch)
+                preds    = model(X_batch)
+                y_smooth = y_batch * (1 - LABEL_SMOOTHING) + LABEL_SMOOTHING / 2
+                loss     = criterion(preds, y_smooth)
                 loss.backward()
                 optimizer.step()
                 batch_losses.append(loss.item())
@@ -161,24 +166,21 @@ def train(model, train_dl, val_dl, optimizer, criterion, scheduler):
             # ── Checkpoint ────────────────────────────────────────────────────
             saved = ""
             if val_loss < best_val_loss:
-                best_val_loss     = val_loss
-                epochs_no_improve = 0
+                best_val_loss = val_loss
                 torch.save(model.state_dict(), MODEL_PATH)
                 saved = "saved"
-            else:
-                epochs_no_improve += 1
 
             print(
                 f"  {epoch:>5}  {train_loss:>10.4f}  "
                 f"{val_loss:>10.4f}  {current_lr:>8.2e}  {saved:>6}"
             )
 
-            if epochs_no_improve >= PATIENCE:
-                print(
-                    f"\n  [EARLY STOP] No improvement for {PATIENCE} epochs. "
-                    f"Stopping at epoch {epoch}."
-                )
-                break
+            # if epochs_no_improve >= PATIENCE:
+            #     print(
+            #         f"\n  [EARLY STOP] No improvement for {PATIENCE} epochs. "
+            #         f"Stopping at epoch {epoch}."
+            #     )
+            #     break
 
     except KeyboardInterrupt:
         print("\n  [INTERRUPTED] Saving graphs from completed epochs...")
@@ -290,7 +292,9 @@ def main():
 
     # 3. Model, optimizer, loss, scheduler
     model     = WinProbModel()
-    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    optimizer = torch.optim.Adam(
+        model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4
+    )
     criterion = nn.BCELoss()
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="min", factor=0.5, patience=10

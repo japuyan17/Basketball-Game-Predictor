@@ -1,5 +1,7 @@
 # Model Features
 
+**Seasons:** 2018-19 · 2019-20 · 2020-21 · 2021-22 · 2022-23 · 2023-24 · 2024-25 · 2025-26
+
 All 19 features fed into the MLP for each matchup. Every stat is a rolling
 cumulative average computed from games played **before** the current game
 (`shift(1)` — no data leakage).

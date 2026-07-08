@@ -8,9 +8,9 @@ from flask_socketio import SocketIO, emit
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 _DIR            = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH      = os.path.join(_DIR, "..", "models", "best_model.pt")
-SCALER_PATH     = os.path.join(_DIR, "..", "models", "scaler.npy")
-TEAM_STATS_PATH = os.path.join(_DIR, "..", "data",   "team_stats_latest.parquet")
+MODEL_PATH      = os.path.join(_DIR, "..", "..", "models", "best_model.pt")
+SCALER_PATH     = os.path.join(_DIR, "..", "..", "models", "scaler.npy")
+TEAM_STATS_PATH = os.path.join(_DIR, "..", "..", "data",   "team_stats_latest.parquet")
 PORT            = 5000
 
 FEATURE_COLS = [
@@ -28,19 +28,23 @@ N_FEATURES = len(FEATURE_COLS)
 
 # ── Model: must match train_model.py exactly ──────────────────────────────────
 class WinProbModel(nn.Module):
-    """Two hidden layers with BatchNorm, ReLU, and Dropout; outputs a win prob."""
+    """Three hidden layers with BatchNorm, ReLU, and Dropout; outputs a win prob."""
 
     def __init__(self, input_dim=N_FEATURES):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(input_dim, 64),
-            nn.BatchNorm1d(64),
+            nn.Linear(input_dim, 128),
+            nn.BatchNorm1d(128),
             nn.ReLU(),
             nn.Dropout(0.3),
+            nn.Linear(128, 64),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            nn.Dropout(0.2),
             nn.Linear(64, 32),
             nn.BatchNorm1d(32),
             nn.ReLU(),
-            nn.Dropout(0.2),
+            nn.Dropout(0.1),
             nn.Linear(32, 1),
             nn.Sigmoid(),
         )
@@ -89,16 +93,13 @@ def find_team(name, team_stats):
 
 # ── Build and scale the feature vector ───────────────────────────────────────
 def build_feature_vector(home_row, away_row, scaler_mean, scaler_scale):
-    """Assembles and scales the 19-feature matchup vector."""
-    net_rtg_diff = (
-        home_row["plus_minus_avg"] - away_row["plus_minus_avg"]
-    )
+    """Assembles and scales the 19-feature matchup vector (order must match FEATURE_COLS)."""
+    net_rtg_diff = home_row["plus_minus_avg"] - away_row["plus_minus_avg"]
     raw = np.array([
-        home_row["win_pct"],           away_row["win_pct"],
-        home_row["ppg"],               away_row["ppg"],
-        home_row["opp_ppg"],           away_row["opp_ppg"],
-        home_row["plus_minus_avg"],    away_row["plus_minus_avg"],
-        home_row["last10_win_pct"],    away_row["last10_win_pct"],
+        home_row["win_pct"],           home_row["ppg"],
+        home_row["opp_ppg"],           home_row["plus_minus_avg"],  home_row["last10_win_pct"],
+        away_row["win_pct"],           away_row["ppg"],
+        away_row["opp_ppg"],           away_row["plus_minus_avg"],  away_row["last10_win_pct"],
         home_row["home_game_win_pct"], away_row["away_game_win_pct"],
         net_rtg_diff,
         home_row["away_ppg"],          away_row["home_ppg"],
@@ -176,9 +177,10 @@ def http_predict():
 def health():
     """Returns server status and number of teams available."""
     return jsonify({
-        "status":        "ok",
-        "model":         "logistic_regression_pytorch",
-        "teams_loaded":  len(team_stats),
+        "status":       "ok",
+        "model":        "mlp_pytorch_3layer",
+        "features":     N_FEATURES,
+        "teams_loaded": len(team_stats),
     })
 
 
@@ -190,6 +192,7 @@ def list_teams():
         "TEAM_NAME", "TEAM_ABBREVIATION",
         "win_pct", "ppg", "opp_ppg", "plus_minus_avg",
         "last10_win_pct", "home_game_win_pct", "away_game_win_pct",
+        "off_efficiency", "tov_rate",
     ]
     available = [c for c in keep_cols if c in team_stats.columns]
     teams = (
