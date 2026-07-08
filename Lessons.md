@@ -62,6 +62,75 @@ Format: each entry = the problem, the fix, and the rule to follow going forward.
   `re.match(r"PT0*(\d+)M0*([\d.]+)S", clock)`. Detect home/away events via
   `location == "h"` / `"v"`, not separate description columns.
 
+## 6. Re-run `build_features.py` whenever feature columns change
+
+- **Problem:** `train_model.py` raised `KeyError: ['home_split_win_pct',
+  'away_split_win_pct', 'net_rtg_diff']` because the saved
+  `data/matchup_features.parquet` was generated before those columns were
+  added to `build_features.py`.
+- **Fix:** Re-ran `build_features.py` to regenerate the parquet with the new
+  columns, then re-ran `train_model.py`.
+- **Rule:** Any time `FEATURE_COLS` grows in `build_features.py`, you must
+  regenerate `data/matchup_features.parquet` and `data/team_stats_latest.parquet`
+  before training. The old parquet will be missing columns and crash `dropna`.
+
+## 7. Upgrade model architecture: single-layer → MLP with BatchNorm
+
+- **What changed:** `WinProbModel` was a single `nn.Linear(N, 1) + Sigmoid`
+  (logistic regression). Upgraded to two hidden layers with BatchNorm:
+  `Linear(N→64) → BatchNorm1d(64) → ReLU → Dropout(0.3) →
+  Linear(64→32) → BatchNorm1d(32) → ReLU → Dropout(0.2) →
+  Linear(32→1) → Sigmoid`.
+- **Why BatchNorm here:** Normalizes activations between layers, stabilizes
+  training on tabular data, and typically gives a 1–2% accuracy lift.
+- **Rule:** `server/app.py` must always mirror `train_model.py`'s architecture
+  exactly (see Lesson 1). After any architecture change, delete the old
+  `best_model.pt` and retrain from scratch.
+
+## 8. Add `ReduceLROnPlateau` alongside early stopping
+
+- **What changed:** Added `torch.optim.lr_scheduler.ReduceLROnPlateau(
+  optimizer, mode="min", factor=0.5, patience=10)`. The scheduler halves the
+  LR after 10 epochs of no val-loss improvement; early stopping still fires at
+  PATIENCE=20.
+- **Why:** Gives the optimizer a chance to fine-tune at a lower LR before
+  giving up entirely. Without it, the model exits at the same LR it started
+  with, leaving potential improvement on the table.
+- **Rule:** Call `scheduler.step(val_loss)` every epoch after the validation
+  pass, before checking early stopping. Print `current_lr` each epoch so LR
+  drops are visible in the log.
+
+## 9. Feature column count must stay in sync across all three files
+
+- **Problem:** `FEATURE_COLS` exists in three places:
+  `build_features.py` (feature list + parquet output),
+  `train_model.py` (training), `server/app.py` (inference).
+  Adding a feature to one without updating the others causes shape mismatches
+  at load time or wrong inference results.
+- **Rule:** When adding features, update all three files in the same change:
+  1. `build_features.py` — compute the column + add to `feature_cols` + add to
+     `save_latest_team_stats` keep list
+  2. `train_model.py` — add to `FEATURE_COLS`
+  3. `server/app.py` — add to `FEATURE_COLS` + add to `build_feature_vector`
+     raw array in the same index position
+
+## 10. Home/away split stats reuse already-computed denominators
+
+- **Pattern:** When computing split stats (e.g., PPG in away games only),
+  reuse `cum_away_games` / `cum_home_games` that were already computed for
+  the win% splits — don't recompute them.
+- **Formula:**
+  ```python
+  df["pts_away_contrib"] = df["PTS"] * df["is_away"]
+  df["cum_pts_away"]     = grp["pts_away_contrib"].transform(
+      lambda x: x.cumsum().shift(1)
+  ).fillna(0)
+  df["away_ppg"] = df["cum_pts_away"] / df["cum_away_games"].replace(0, np.nan)
+  ```
+- **Rule:** All split stats use `.cumsum().shift(1)` to prevent leakage.
+  Replace 0-game denominators with `np.nan` so early-season rows produce NaN
+  (dropped later by `dropna`) rather than division-by-zero.
+
 ## 6. `to_parquet` needs a Parquet engine installed
 
 - **Problem:** `season_df.to_parquet(...)` crashed with `ImportError` from

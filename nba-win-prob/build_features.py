@@ -1,149 +1,251 @@
 import os
-import re
 import numpy as np
 import pandas as pd
 
 # ── Settings ──────────────────────────────────────────────────────────────────
-DATA_DIR = "data"
-SEASONS  = [
-    "2018-19", "2019-20", "2020-21",
-    "2021-22", "2022-23", "2023-24",
-]
-OUT_PATH = os.path.join(DATA_DIR, "sequences.npz")
-
-FEATURE_COLS = [
-    "score_diff", "secs_left", "period", "home_foul_diff", "momentum"
-]
+DATA_DIR       = "data"
+SEASONS        = ["2018-19", "2019-20", "2020-21", "2021-22", "2022-23", "2023-24"]
+OUT_FEATURES   = os.path.join(DATA_DIR, "matchup_features.parquet")
+OUT_TEAM_STATS = os.path.join(DATA_DIR, "team_stats_latest.parquet")
+MIN_GAMES      = 5   # drop matchups where either team has fewer games of history
 
 
-# ── Helper: parse V3 clock string → total seconds remaining in game ───────────
-def parse_clock(clock_str, period):
-    """Converts a V3 ISO clock string into total seconds left in the game."""
-    try:
-        match = re.match(r"PT0*(\d+)M0*([\d.]+)S", str(clock_str))
-        if not match:
-            return None
-        mins = int(match.group(1))
-        secs = float(match.group(2))
-        secs_left_in_period = mins * 60 + secs
-        if period <= 4:
-            return max(0, 4 - period) * 720 + secs_left_in_period
-        else:
-            return secs_left_in_period
-    except Exception:
-        return None
-
-
-# ── Core: build ordered feature sequence for one game ─────────────────────────
-def build_game_sequence(df):
+# ── Compute rolling per-team stats for one season dataframe ───────────────────
+def add_rolling_stats(df):
     """
-    Takes raw play-by-play for one game, returns (sequence, label) where
-    sequence is shape (n_plays, 5) and label is 1 if home won, 0 otherwise.
-    Returns None if the game is invalid (tie or empty after cleaning).
+    Adds rolling season stats to each team-game row using only games played
+    BEFORE the current game (shift(1) prevents data leakage).
+    New columns: win_pct, ppg, opp_ppg, plus_minus_avg, last10_win_pct,
+    home_game_win_pct, away_game_win_pct, games_played.
     """
-    df = df.copy().sort_values("actionNumber").reset_index(drop=True)
+    df = df.sort_values(["TEAM_ID", "GAME_DATE"]).copy()
+    df["win"]     = (df["WL"] == "W").astype(float)
+    df["is_home"] = df["MATCHUP"].str.contains(r"vs\.", regex=True).astype(float)
+    df["is_away"] = 1.0 - df["is_home"]
 
-    # Score differential
-    home_score   = pd.to_numeric(df["scoreHome"], errors="coerce").ffill().fillna(0)
-    away_score   = pd.to_numeric(df["scoreAway"], errors="coerce").ffill().fillna(0)
-    df["score_diff"] = (home_score - away_score).astype(float)
+    grp = df.groupby("TEAM_ID")
 
-    # Time remaining
-    df["secs_left"] = df.apply(
-        lambda r: parse_clock(r["clock"], r["period"]), axis=1
-    ).ffill().fillna(0).astype(float)
+    # Cumulative games played before this game
+    df["games_played"] = grp.cumcount()  # 0-indexed = games before this one
 
-    # Period
-    df["period"] = df["period"].fillna(1).astype(int)
+    # Overall win %
+    df["cum_wins"] = grp["win"].transform(
+        lambda x: x.cumsum().shift(1)
+    ).fillna(0)
+    df["win_pct"]  = df["cum_wins"] / df["games_played"].replace(0, np.nan)
 
-    # Foul differential
-    is_foul        = df["description"].str.contains("FOUL", case=False, na=False)
-    home_fouls     = (is_foul & (df["location"] == "h")).cumsum()
-    away_fouls     = (is_foul & (df["location"] == "v")).cumsum()
-    df["home_foul_diff"] = (home_fouls - away_fouls).astype(float)
+    # Points per game
+    df["cum_pts"] = grp["PTS"].transform(
+        lambda x: x.cumsum().shift(1)
+    ).fillna(0)
+    df["ppg"] = df["cum_pts"] / df["games_played"].replace(0, np.nan)
 
-    # Momentum: score-diff change over the last 5 plays
-    df["momentum"] = df["score_diff"].diff(5).fillna(0).astype(float)
+    # Net rating (avg plus/minus per game)
+    df["cum_pm"] = grp["PLUS_MINUS"].transform(
+        lambda x: x.cumsum().shift(1)
+    ).fillna(0)
+    df["plus_minus_avg"] = df["cum_pm"] / df["games_played"].replace(0, np.nan)
 
-    # Label
-    final_diff = df["score_diff"].iloc[-1]
-    if final_diff == 0:
-        return None
-    label = int(final_diff > 0)
+    # Opponent PPG derived from PPG and net rating (avoids a second join)
+    df["opp_ppg"] = df["ppg"] - df["plus_minus_avg"]
 
-    seq = df[FEATURE_COLS].dropna().values.astype(np.float32)
-    if len(seq) == 0:
-        return None
+    # Last-10 win %
+    df["last10_win_pct"] = (
+        grp["win"].transform(lambda x: x.shift(1).rolling(10, min_periods=1).sum())
+        / grp["win"].transform(
+            lambda x: x.shift(1).rolling(10, min_periods=1).count()
+        ).replace(0, np.nan)
+    )
 
-    return seq, label
+    # Home-game win % (win% in games played at home only)
+    df["home_win_contrib"] = df["win"] * df["is_home"]
+    df["cum_home_wins"]    = grp["home_win_contrib"].transform(
+        lambda x: x.cumsum().shift(1)
+    ).fillna(0)
+    df["cum_home_games"]   = grp["is_home"].transform(
+        lambda x: x.cumsum().shift(1)
+    ).fillna(0)
+    df["home_game_win_pct"] = (
+        df["cum_home_wins"] / df["cum_home_games"].replace(0, np.nan)
+    )
+
+    # Away-game win % (win% in games played on the road only)
+    df["away_win_contrib"] = df["win"] * df["is_away"]
+    df["cum_away_wins"]    = grp["away_win_contrib"].transform(
+        lambda x: x.cumsum().shift(1)
+    ).fillna(0)
+    df["cum_away_games"]   = grp["is_away"].transform(
+        lambda x: x.cumsum().shift(1)
+    ).fillna(0)
+    df["away_game_win_pct"] = (
+        df["cum_away_wins"] / df["cum_away_games"].replace(0, np.nan)
+    )
+
+    # PPG in away games only (how a team scores on the road)
+    df["pts_away_contrib"] = df["PTS"] * df["is_away"]
+    df["cum_pts_away"]     = grp["pts_away_contrib"].transform(
+        lambda x: x.cumsum().shift(1)
+    ).fillna(0)
+    df["away_ppg"] = df["cum_pts_away"] / df["cum_away_games"].replace(0, np.nan)
+
+    # PPG in home games only (how a team scores at home)
+    df["pts_home_contrib"] = df["PTS"] * df["is_home"]
+    df["cum_pts_home"]     = grp["pts_home_contrib"].transform(
+        lambda x: x.cumsum().shift(1)
+    ).fillna(0)
+    df["home_ppg"] = df["cum_pts_home"] / df["cum_home_games"].replace(0, np.nan)
+
+    # Pace-adjusted offensive efficiency (points per 100 possessions)
+    df["poss"]     = df["FGA"] - df["OREB"] + df["TOV"] + 0.44 * df["FTA"]
+    df["cum_poss"] = grp["poss"].transform(
+        lambda x: x.cumsum().shift(1)
+    ).fillna(0)
+    df["off_efficiency"] = (
+        df["cum_pts"] / df["cum_poss"].replace(0, np.nan)
+    ) * 100
+
+    # Turnover rate (turnovers per 100 possessions)
+    df["cum_tov"] = grp["TOV"].transform(
+        lambda x: x.cumsum().shift(1)
+    ).fillna(0)
+    df["tov_rate"] = (
+        df["cum_tov"] / df["cum_poss"].replace(0, np.nan)
+    ) * 100
+
+    return df
 
 
-# ── Main loop ─────────────────────────────────────────────────────────────────
+# ── Build matchup rows by joining home and away team stats per game ────────────
+def build_matchups(df):
+    """
+    Splits team-game rows into home and away, then joins on GAME_ID to create
+    one row per game with both teams' rolling stats side by side.
+    """
+    home = df[df["MATCHUP"].str.contains(r"vs\.", regex=True)].copy()
+    away = df[df["MATCHUP"].str.contains(r"@",    regex=True)].copy()
+
+    stat_cols = [
+        "GAME_ID", "GAME_DATE", "TEAM_NAME", "TEAM_ABBREVIATION",
+        "win", "win_pct", "ppg", "opp_ppg", "plus_minus_avg",
+        "last10_win_pct", "home_game_win_pct", "away_game_win_pct",
+        "away_ppg", "home_ppg",
+        "off_efficiency", "tov_rate", "games_played",
+    ]
+
+    matchups = home[stat_cols].merge(
+        away[stat_cols],
+        on=["GAME_ID", "GAME_DATE"],
+        suffixes=("_home", "_away"),
+    )
+
+    matchups = matchups.rename(columns={
+        "TEAM_NAME_home":         "home_team",
+        "TEAM_NAME_away":         "away_team",
+        "TEAM_ABBREVIATION_home": "home_abbr",
+        "TEAM_ABBREVIATION_away": "away_abbr",
+        "win_home":               "home_win",
+        "home_game_win_pct_home": "home_split_win_pct",
+        "away_game_win_pct_away": "away_split_win_pct",
+        # how many points each team scores in their non-native venue
+        "away_ppg_home":          "home_team_away_ppg",
+        "home_ppg_away":          "away_team_home_ppg",
+    })
+
+    # Net rating differential: positive = home team is better
+    matchups["net_rtg_diff"] = (
+        matchups["plus_minus_avg_home"] - matchups["plus_minus_avg_away"]
+    )
+
+    # Drop rows where either team lacks enough history
+    matchups = matchups[
+        (matchups["games_played_home"] >= MIN_GAMES) &
+        (matchups["games_played_away"] >= MIN_GAMES)
+    ]
+
+    return matchups.drop(columns=["win_away"])
+
+
+# ── Save latest stats per team for use by the server at inference time ─────────
+def save_latest_team_stats(df):
+    """
+    Keeps only the most recent row per team (highest games_played) so the
+    server can look up any team's current stats by name.
+    """
+    latest = (
+        df.sort_values("games_played", ascending=False)
+          .groupby("TEAM_ID")
+          .first()
+          .reset_index()
+    )
+    keep = [
+        "TEAM_ID", "TEAM_NAME", "TEAM_ABBREVIATION",
+        "win_pct", "ppg", "opp_ppg", "plus_minus_avg",
+        "last10_win_pct", "home_game_win_pct", "away_game_win_pct",
+        "away_ppg", "home_ppg",
+        "off_efficiency", "tov_rate", "games_played",
+    ]
+    latest[keep].to_parquet(OUT_TEAM_STATS, index=False)
+    print(f"  Latest team stats saved to {OUT_TEAM_STATS}  ({len(latest)} teams)")
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
 def main():
-    """Builds per-game sequences and saves them as a padded numpy archive."""
-    all_sequences = []
-    all_labels    = []
-    total_games   = 0
-    skipped       = 0
+    """Loads team game logs, builds matchup features, and saves outputs."""
+    all_team_rows = []
+    all_matchups  = []
 
     for season in SEASONS:
-        path = os.path.join(DATA_DIR, f"pbp_{season}.parquet")
+        path = os.path.join(DATA_DIR, f"team_games_{season}.parquet")
         if not os.path.exists(path):
             print(f"[SKIP] {path} not found — run fetch_data.py first")
             continue
 
         print(f"\n[LOADING] {season}...")
-        raw      = pd.read_parquet(path)
-        game_ids = raw["GAME_ID"].unique()
-        print(f"  {len(game_ids)} games found")
+        raw = pd.read_parquet(path)
+        raw["GAME_DATE"] = pd.to_datetime(raw["GAME_DATE"])
 
-        season_count = 0
-        for gid in game_ids:
-            game_df = raw[raw["GAME_ID"] == gid].copy()
-            try:
-                result = build_game_sequence(game_df)
-                if result is not None:
-                    seq, label = result
-                    all_sequences.append(seq)
-                    all_labels.append(label)
-                    total_games  += 1
-                    season_count += 1
-                else:
-                    skipped += 1
-            except Exception as e:
-                print(f"  [ERROR] {gid}: {e}")
-                skipped += 1
+        enriched  = add_rolling_stats(raw)
+        matchups  = build_matchups(enriched)
 
-        print(f"  Built sequences for {season_count} games")
+        all_team_rows.append(enriched)
+        all_matchups.append(matchups)
 
-    if not all_sequences:
-        print("\nNo data found. Make sure fetch_data.py has been run first.")
+        print(
+            f"  {matchups['GAME_ID'].nunique()} matchups built  "
+            f"({len(matchups)} rows after MIN_GAMES={MIN_GAMES} filter)"
+        )
+
+    if not all_matchups:
+        print("\nNo data found. Run fetch_data.py first.")
         return
 
-    # ── Pad all sequences to the same length with zeros ───────────────────────
-    max_len    = max(len(s) for s in all_sequences)
-    n_games    = len(all_sequences)
-    n_features = len(FEATURE_COLS)
+    # ── Combine and save matchup features ─────────────────────────────────────
+    final = pd.concat(all_matchups, ignore_index=True)
 
-    X       = np.zeros((n_games, max_len, n_features), dtype=np.float32)
-    lengths = np.zeros(n_games, dtype=np.int32)
-    y       = np.array(all_labels, dtype=np.float32)
+    feature_cols = [
+        "win_pct_home",        "ppg_home",
+        "opp_ppg_home",        "plus_minus_avg_home",   "last10_win_pct_home",
+        "win_pct_away",        "ppg_away",
+        "opp_ppg_away",        "plus_minus_avg_away",   "last10_win_pct_away",
+        "home_split_win_pct",  "away_split_win_pct",    "net_rtg_diff",
+        "home_team_away_ppg",  "away_team_home_ppg",
+        "off_efficiency_home", "off_efficiency_away",
+        "tov_rate_home",       "tov_rate_away",
+    ]
 
-    for i, seq in enumerate(all_sequences):
-        seq_len         = len(seq)
-        X[i, :seq_len]  = seq
-        lengths[i]      = seq_len
+    final = final.dropna(subset=feature_cols + ["home_win"])
+    final.to_parquet(OUT_FEATURES, index=False)
 
     print(f"\n[STATS]")
-    print(f"  Total games   : {total_games:,}")
-    print(f"  Skipped games : {skipped:,}")
-    print(f"  X shape       : {X.shape}  (games × timesteps × features)")
-    print(f"  Max seq length: {max_len}")
-    print(f"  Avg seq length: {lengths.mean():.0f}")
-    print(f"  Home win rate : {y.mean():.1%}")
+    print(f"  Total matchups : {len(final):,}")
+    print(f"  Home win rate  : {final['home_win'].mean():.1%}")
+    print(f"  Features       : {feature_cols}")
+    print(f"\n[DONE] Matchup features saved to {OUT_FEATURES}")
 
-    np.savez(OUT_PATH, X=X, y=y, lengths=lengths)
-    print(f"\n[DONE] Saved to {OUT_PATH}")
+    # ── Save latest team stats for server inference ────────────────────────────
+    # Use the most recent season only for current stats
+    latest_season_rows = all_team_rows[-1]
+    save_latest_team_stats(latest_season_rows)
 
 
 if __name__ == "__main__":

@@ -1,76 +1,53 @@
-import time
 import os
+import time
 import pandas as pd
-from nba_api.stats.endpoints import LeagueGameFinder, PlayByPlayV3
- 
-# ── Settings ────────────────────────────────────────────────────────────────
-SEASONS = ["2018-19", "2019-20", "2020-21", "2021-22", "2022-23", "2023-24"]
-DATA_DIR = "data"
-SLEEP_SECONDS = 0.7   # pause between API calls so NBA.com doesn't block you
- 
-# ── Helpers ──────────────────────────────────────────────────────────────────
- 
-def fetch_game_ids(season):
-    print(f"  Fetching game IDs for {season}...")
+from nba_api.stats.endpoints import LeagueGameFinder
+
+# ── Settings ──────────────────────────────────────────────────────────────────
+SEASONS      = ["2018-19", "2019-20", "2020-21", "2021-22", "2022-23", "2023-24"]
+DATA_DIR     = "data"
+SLEEP_SECONDS = 0.7
+
+
+# ── Fetch one season of team-level game stats ─────────────────────────────────
+def fetch_team_games(season):
+    """Pulls every regular-season game row for all teams in a given season."""
     time.sleep(SLEEP_SECONDS)
     finder = LeagueGameFinder(
         season_nullable=season,
-        league_id_nullable="00",          # 00 = NBA
-        season_type_nullable="Regular Season"
+        league_id_nullable="00",
+        season_type_nullable="Regular Season",
     )
-    games = finder.get_data_frames()[0]
-    ids = games["GAME_ID"].unique().tolist()
-    print(f"  Found {len(ids)} games")
-    return ids
+    df = finder.get_data_frames()[0]
+    df["SEASON"] = season
+    return df
 
 
-def fetch_pbp(game_id):
-    time.sleep(SLEEP_SECONDS)
-    pbp = PlayByPlayV3(game_id=game_id)
-    return pbp.get_data_frames()[0]
- 
- 
-# ── Main loop ────────────────────────────────────────────────────────────────
- 
+# ── Main ──────────────────────────────────────────────────────────────────────
 def main():
+    """Downloads team game logs for all seasons and saves each as a parquet."""
     os.makedirs(DATA_DIR, exist_ok=True)
 
     for season in SEASONS:
-        out_path = os.path.join(DATA_DIR, f"pbp_{season}.parquet")
- 
-        # Skip seasons we already downloaded
+        out_path = os.path.join(DATA_DIR, f"team_games_{season}.parquet")
+
         if os.path.exists(out_path):
             print(f"[SKIP] {season} already saved")
             continue
 
-        print(f"\n[START] Season {season}")
-        game_ids = fetch_game_ids(season)
- 
-        frames = []
-        total = len(game_ids)
- 
-        for i, gid in enumerate(game_ids, 1):
-            try:
-                df = fetch_pbp(gid)
-                df["GAME_ID"] = gid
-                frames.append(df)
- 
-                if i % 50 == 0:
-                    print(f"  {i}/{total} games fetched...")
- 
-            except Exception as e:
-                print(f"  [ERROR] game {gid}: {e} — skipping")
+        print(f"\n[FETCHING] {season}...")
+        try:
+            df = fetch_team_games(season)
+            df.to_parquet(out_path, index=False)
+            print(
+                f"[DONE] {season} — {len(df)} team-game rows "
+                f"({df['GAME_ID'].nunique()} games) saved to {out_path}"
+            )
+        except Exception as e:
+            print(f"[ERROR] {season}: {e}")
 
-        if frames:
-            season_df = pd.concat(frames, ignore_index=True)
-            season_df.to_parquet(out_path, index=False)
-            print(f"[DONE] {season} — {len(frames)} games saved to {out_path}")
-        else:
-            print(f"[WARN] {season} — no data fetched")
-
-    print("\nAll seasons complete. Check your data/ folder.")
+    print("\nAll seasons complete. Run build_features.py next.")
 
 
 if __name__ == "__main__":
     main()
- 

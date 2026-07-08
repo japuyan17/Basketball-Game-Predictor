@@ -1,140 +1,146 @@
-import time
-import random
-import pandas as pd
-import socketio
- 
+import requests
+
 # ── Settings ──────────────────────────────────────────────────────────────────
-SERVER_URL   = "http://localhost:5000"
-DATA_PATH    = "data/features.parquet"
-DELAY        = 0.4   # seconds between each play-by-play event
- 
-# Team name pairs for display — randomly picked if not specified
-TEAM_PAIRS = [
-    ("Lakers",    "Celtics"),
-    ("Warriors",  "Bulls"),
-    ("Heat",      "Bucks"),
-    ("Nets",      "Suns"),
-    ("Nuggets",   "Clippers"),
+SERVER_URL = "http://localhost:5000"
+
+STAT_ROWS = [
+    ("Win %",         "win_pct",           ".1%"),
+    ("PPG",           "ppg",               ".1f"),
+    ("Opp PPG",       "opp_ppg",           ".1f"),
+    ("Net Rating",    "plus_minus_avg",    "+.1f"),
+    ("Last 10 Win %", "last10_win_pct",    ".1%"),
+    ("Home Win %",    "home_game_win_pct", ".1%"),
+    ("Away Win %",    "away_game_win_pct", ".1%"),
 ]
- 
- 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-def seconds_to_clock(secs_left):
-    """Convert total seconds remaining to a readable clock string like '4:23'."""
-    secs_left = max(0, int(secs_left))
-    if secs_left == 0:
-        return "0:00"
-    period_secs = secs_left % 720 if secs_left <= 2880 else secs_left % 300
-    mins = period_secs // 60
-    secs = period_secs % 60
-    return f"{mins}:{secs:02d}"
- 
- 
-def secs_to_period(secs_left):
-    """Infer the period number from total seconds remaining."""
-    if secs_left > 2160: return 1
-    if secs_left > 1440: return 2
-    if secs_left > 720:  return 3
-    if secs_left > 0:    return 4
-    return 5  # overtime
- 
- 
-def pick_game(df):
-    """
-    Pick an interesting game to simulate — one with a lead change in the
-    4th quarter so the probability chart is dramatic.
-    """
-    game_ids = df["GAME_ID"].unique()
- 
-    for gid in random.sample(list(game_ids), min(50, len(game_ids))):
-        game = df[df["GAME_ID"] == gid].reset_index(drop=True)
-        q4   = game[game["period"] == 4]
-        if len(q4) < 20:
-            continue
-        # Look for a lead change in Q4
-        diffs = q4["score_diff"].values
-        if (diffs.min() < -3) and (diffs.max() > 3):
-            print(f"[GAME] Found dramatic game: {gid}")
-            return game
- 
-    # Fallback: just pick a random game
-    gid = random.choice(list(game_ids))
-    print(f"[GAME] Using game: {gid}")
-    return df[df["GAME_ID"] == gid].reset_index(drop=True)
- 
- 
+
+
+# ── Confidence tier based on win probability margin ───────────────────────────
+def confidence_label(prob):
+    """Returns a descriptive tier for a given win probability."""
+    margin = abs(prob - 0.5)
+    if margin >= 0.20:
+        return "Strong favorite"
+    elif margin >= 0.10:
+        return "Lean"
+    else:
+        return "Toss-up"
+
+
+# ── Side-by-side stats table for both teams ───────────────────────────────────
+def print_stats_comparison(away_stats, home_stats, away_name, home_name):
+    """Prints a formatted side-by-side stat breakdown for both teams."""
+    col = 20
+    print(f"\n  {'Stat':<16}  {away_name:^{col}}  {home_name:^{col}}")
+    print(f"  {'─' * 16}  {'─' * col}  {'─' * col}")
+    for label, key, fmt in STAT_ROWS:
+        a_val = away_stats.get(key)
+        h_val = home_stats.get(key)
+        a_str = format(a_val, fmt) if a_val is not None else "N/A"
+        h_str = format(h_val, fmt) if h_val is not None else "N/A"
+        print(f"  {label:<16}  {a_str:^{col}}  {h_str:^{col}}")
+
+
+# ── Main prediction display ───────────────────────────────────────────────────
+def print_prediction(result, away_stats, home_stats):
+    """Prints win probability bar, predicted winner, confidence, and stat table."""
+    home      = result["home_team"]
+    away      = result["away_team"]
+    home_prob = result["home_win_prob"]
+    away_prob = result["away_win_prob"]
+
+    bar_len   = 40
+    home_fill = int(home_prob * bar_len)
+    bar       = "█" * home_fill + "░" * (bar_len - home_fill)
+
+    print("\n" + "─" * 58)
+    print(f"  {away:^26} @  {home:^26}")
+    print("─" * 58)
+    print(f"  [{bar}]")
+    print(f"  {away:<26}    {home:>26}")
+    print(f"  {away_prob:.1%:<26}    {home_prob:>25.1%}")
+    print("─" * 58)
+
+    winner = home if home_prob > 0.5 else away
+    conf   = max(home_prob, away_prob)
+    tier   = confidence_label(home_prob)
+    print(f"  Predicted winner : {winner}  ({conf:.1%} — {tier})")
+
+    if away_stats and home_stats:
+        print_stats_comparison(away_stats, home_stats, away, home)
+
+    print()
+
+
+# ── Fetch teams with stats from server ────────────────────────────────────────
+def get_teams():
+    """Fetches all teams from the server and displays them in 3 columns."""
+    resp  = requests.get(f"{SERVER_URL}/teams", timeout=5)
+    teams = resp.json().get("teams", [])
+
+    col_width = 32
+    n_cols    = 3
+    print("\nAvailable teams:")
+    for i in range(0, len(teams), n_cols):
+        row  = teams[i : i + n_cols]
+        line = "".join(
+            f"  {t['TEAM_NAME']} ({t['TEAM_ABBREVIATION']})".ljust(col_width + 2)
+            for t in row
+        )
+        print(line)
+
+    return teams
+
+
+# ── Fuzzy team lookup against the fetched list ────────────────────────────────
+def find_team_stats(name, teams):
+    """Finds a team by name or abbreviation match; returns its stats dict."""
+    name_lower = name.strip().lower()
+    for t in teams:
+        if (
+            name_lower in t["TEAM_NAME"].lower()
+            or name_lower == t["TEAM_ABBREVIATION"].lower()
+        ):
+            return t
+    return None
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
-    # Load features
-    print("[LOAD] Reading features.parquet...")
-    df = pd.read_parquet(DATA_PATH)
-    print(f"  {df['GAME_ID'].nunique():,} games available")
- 
-    # Pick a game
-    game = pick_game(df)
-    home_team, away_team = random.choice(TEAM_PAIRS)
-    total_rows = len(game)
-    print(f"  Simulating {total_rows} events as {home_team} vs {away_team}\n")
- 
-    # Connect to server
-    client = socketio.Client()
- 
-    @client.on("connect")
-    def on_connect():
-        print("[WS] Connected to server")
- 
-    @client.on("prediction")
-    def on_prediction(data):
-        prob  = data["home_win_prob"]
-        score = f"{data['home_score']} - {data['away_score']}"
-        clock = data["game_clock"]
-        period = data["period"]
-        bar_len = 30
-        filled = int(prob * bar_len)
-        bar = "█" * filled + "░" * (bar_len - filled)
-        print(f"  Q{period} {clock:>5}  |  {home_team} {score} {away_team}  |  [{bar}] {prob:.0%}")
- 
-    @client.on("error")
-    def on_error(data):
-        print(f"[ERROR] {data['message']}")
- 
-    client.connect(SERVER_URL)
- 
-    # ── Replay the game event by event ────────────────────────────────────────
-    print(f"{'Period':>8}  {'Clock':>6}  {'Score':^15}  {'Home Win Prob':^34}")
-    print("-" * 75)
- 
-    # Reconstruct running home/away scores from score_diff
-    # We don't have raw scores in features.parquet so we approximate
-    base_score = 50  # starting point for display purposes
- 
-    for i, row in game.iterrows():
-        score_diff  = float(row["score_diff"])
-        secs_left   = float(row["secs_left"])
-        period      = int(row["period"])
-        foul_diff   = float(row["home_foul_diff"])
-        momentum    = float(row["momentum"])
-        game_clock  = seconds_to_clock(secs_left)
- 
-        # Approximate display scores from differential
-        home_score = int(base_score + score_diff / 2)
-        away_score = int(base_score - score_diff / 2)
- 
-        client.emit("game_state", {
-            "features":   [score_diff, secs_left, period, foul_diff, momentum],
-            "home_team":  home_team,
-            "away_team":  away_team,
-            "home_score": home_score,
-            "away_score": away_score,
-            "game_clock": game_clock,
-            "period":     period,
-        })
- 
-        time.sleep(DELAY)
- 
-    print("\n[DONE] Game simulation complete.")
-    client.disconnect()
- 
- 
+    """Prompts the user for two teams and prints the win probability prediction."""
+    print("\n── NBA Pre-Game Predictor ──")
+
+    try:
+        resp = requests.get(f"{SERVER_URL}/health", timeout=5)
+        resp.raise_for_status()
+    except Exception:
+        print(
+            f"[ERROR] Cannot connect to server at {SERVER_URL}.\n"
+            "Make sure server/app.py is running first."
+        )
+        return
+
+    teams = get_teams()
+
+    print()
+    away_input = input("Enter away team name or abbreviation: ").strip()
+    home_input = input("Enter home team name or abbreviation: ").strip()
+
+    resp = requests.post(
+        f"{SERVER_URL}/predict",
+        json={"home_team": home_input, "away_team": away_input},
+        timeout=5,
+    )
+    result = resp.json()
+
+    if "error" in result:
+        print(f"\n[ERROR] {result['error']}")
+        return
+
+    away_stats = find_team_stats(away_input, teams)
+    home_stats = find_team_stats(home_input, teams)
+
+    print_prediction(result, away_stats, home_stats)
+
+
 if __name__ == "__main__":
     main()
