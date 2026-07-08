@@ -182,3 +182,4 @@ cython_debug/
 
 # Private project context — share manually, do not commit
 CONTEXT.md
+CLAUDE.md
