@@ -4,7 +4,10 @@ import pandas as pd
 from nba_api.stats.endpoints import LeagueGameFinder
 
 # ── Settings ──────────────────────────────────────────────────────────────────
-SEASONS      = ["2018-19", "2019-20", "2020-21", "2021-22", "2022-23", "2023-24"]
+SEASONS      = [
+    "2018-19", "2019-20", "2020-21", "2021-22",
+    "2022-23", "2023-24", "2024-25", "2025-26",
+]
 DATA_DIR     = "data"
 SLEEP_SECONDS = 0.7
 

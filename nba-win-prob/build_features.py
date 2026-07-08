@@ -4,7 +4,10 @@ import pandas as pd
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 DATA_DIR       = "data"
-SEASONS        = ["2018-19", "2019-20", "2020-21", "2021-22", "2022-23", "2023-24"]
+SEASONS        = [
+    "2018-19", "2019-20", "2020-21", "2021-22",
+    "2022-23", "2023-24", "2024-25", "2025-26",
+]
 OUT_FEATURES   = os.path.join(DATA_DIR, "matchup_features.parquet")
 OUT_TEAM_STATS = os.path.join(DATA_DIR, "team_stats_latest.parquet")
 MIN_GAMES      = 5   # drop matchups where either team has fewer games of history
