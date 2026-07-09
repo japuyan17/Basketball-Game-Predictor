@@ -1,7 +1,7 @@
 # Basketball Game Predictor
 
 Pre-game NBA win probability model. Enter two teams and get a predicted winner with
-confidence tier and a side-by-side stat breakdown. Supports injury adjustments.
+confidence tier and a side-by-side stat breakdown.
 
 ---
 
@@ -61,7 +61,11 @@ Base URL: `http://localhost:5000`
   ]
 }
 ```
+---
 
+## How it Works
+
+We take the 19 features, see `features.md`, and then we train a logistic regression model that learns different aspects of what makes a team a winner, offensive rating, defensive rating, turnover rate, etc. By doing this our model is able to predict games and give a percentage chance, confidence score, of the winner of a certain game the user inputs.
 ---
 
 ## Injury Adjustments
