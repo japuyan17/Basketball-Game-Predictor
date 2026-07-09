@@ -42,6 +42,9 @@ RANDOM_SEED      = 42
 LABEL_SMOOTHING  = 0.1   # smooths 0→0.05, 1→0.95 to prevent overconfidence
 # PATIENCE      = 20
 
+# Injury adjustments are NOT applied during training — they happen at inference
+# time in injury_adjust.py. The model learns from clean historical team stats.
+
 
 # ── 1. Dataset ────────────────────────────────────────────────────────────────
 class MatchupDataset(Dataset):

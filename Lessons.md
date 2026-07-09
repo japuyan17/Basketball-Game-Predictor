@@ -131,7 +131,7 @@ Format: each entry = the problem, the fix, and the rule to follow going forward.
   Replace 0-game denominators with `np.nan` so early-season rows produce NaN
   (dropped later by `dropna`) rather than division-by-zero.
 
-## 6. `to_parquet` needs a Parquet engine installed
+## 11. `to_parquet` needs a Parquet engine installed
 
 - **Problem:** `season_df.to_parquet(...)` crashed with `ImportError` from
   pandas `get_engine` — the script fetched data fine but couldn't save it
@@ -141,3 +141,15 @@ Format: each entry = the problem, the fix, and the rule to follow going forward.
   `fastparquet`). It's in `requirements.txt`, but confirm it's actually
   installed in the interpreter being run (`python -c "import pyarrow"`),
   especially on brand-new Python versions where wheels may lag.
+
+## 12. Injury adjustment layer depends on specific columns in `team_stats_latest.parquet`
+
+- **Problem:** `apply_injury_adjustments()` in `injury_adjust.py` reads
+  `ppg`, `plus_minus_avg`, and `off_efficiency` directly from the team row.
+  If `build_features.py` ever renames or drops these columns from the `keep`
+  list in `save_latest_team_stats()`, the injury layer crashes with a KeyError.
+- **Fix:** Verified that all three columns are present in the `keep` list.
+- **Rule:** The three-file sync from Lesson 9 now has a fourth file:
+  `injury_adjust.py`. Any change to columns saved in `team_stats_latest.parquet`
+  must be checked against what `apply_injury_adjustments()` reads. Add a comment
+  near the `keep` list in `save_latest_team_stats()` if a column is injury-critical.

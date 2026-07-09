@@ -1,10 +1,15 @@
 import os
+import sys
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
 from flask import Flask, request, jsonify
 from flask_socketio import SocketIO, emit
+
+# Allow importing from the parent nba-win-prob directory
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from injury_adjust import fetch_player_stats, apply_injury_adjustments
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 _DIR            = os.path.dirname(os.path.abspath(__file__))
@@ -71,8 +76,11 @@ def load_assets():
     print(f"[MODEL]  Loaded from {MODEL_PATH}")
     print(f"[SCALER] Loaded from {SCALER_PATH}")
     print(f"[TEAMS]  {len(team_stats)} teams loaded")
+    print("[PLAYERS] Fetching current player stats from nba_api...")
+    player_stats = fetch_player_stats()
+    print(f"[PLAYERS] {len(player_stats)} players loaded")
 
-    return model, scaler_mean, scaler_scale, team_stats
+    return model, scaler_mean, scaler_scale, team_stats, player_stats
 
 
 # ── Fuzzy team name lookup ────────────────────────────────────────────────────
@@ -111,10 +119,11 @@ def build_feature_vector(home_row, away_row, scaler_mean, scaler_scale):
 
 # ── Core prediction logic ─────────────────────────────────────────────────────
 def predict_matchup(home_name, away_name, model, scaler_mean, scaler_scale,
-                    team_stats):
+                    team_stats, player_stats=None,
+                    home_injuries=None, away_injuries=None):
     """
-    Looks up both teams, builds the scaled feature vector, runs inference,
-    and returns a result dict with win probabilities.
+    Looks up both teams, optionally adjusts stats for injured players,
+    builds the scaled feature vector, runs inference, and returns win probs.
     """
     home_row = find_team(home_name, team_stats)
     away_row = find_team(away_name, team_stats)
@@ -123,6 +132,20 @@ def predict_matchup(home_name, away_name, model, scaler_mean, scaler_scale,
         return {"error": f"Team not found: '{home_name}'"}
     if away_row is None:
         return {"error": f"Team not found: '{away_name}'"}
+
+    adjustment_log = []
+
+    if home_injuries and player_stats is not None:
+        home_row, log = apply_injury_adjustments(
+            home_row, home_injuries, player_stats
+        )
+        adjustment_log.extend(log)
+
+    if away_injuries and player_stats is not None:
+        away_row, log = apply_injury_adjustments(
+            away_row, away_injuries, player_stats
+        )
+        adjustment_log.extend(log)
 
     scaled = build_feature_vector(
         home_row, away_row, scaler_mean, scaler_scale
@@ -133,10 +156,11 @@ def predict_matchup(home_name, away_name, model, scaler_mean, scaler_scale,
         prob = model(tensor).item()
 
     return {
-        "home_team":     home_row["TEAM_NAME"],
-        "away_team":     away_row["TEAM_NAME"],
-        "home_win_prob": round(prob, 4),
-        "away_win_prob": round(1 - prob, 4),
+        "home_team":      home_row["TEAM_NAME"],
+        "away_team":      away_row["TEAM_NAME"],
+        "home_win_prob":  round(prob, 4),
+        "away_win_prob":  round(1 - prob, 4),
+        "adjustments":    adjustment_log,
     }
 
 
@@ -144,7 +168,7 @@ def predict_matchup(home_name, away_name, model, scaler_mean, scaler_scale,
 app      = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
-model, scaler_mean, scaler_scale, team_stats = load_assets()
+model, scaler_mean, scaler_scale, team_stats, player_stats = load_assets()
 
 
 # ── POST /predict ─────────────────────────────────────────────────────────────
@@ -163,7 +187,9 @@ def http_predict():
 
     result = predict_matchup(
         data["home_team"], data["away_team"],
-        model, scaler_mean, scaler_scale, team_stats,
+        model, scaler_mean, scaler_scale, team_stats, player_stats,
+        home_injuries=data.get("home_injuries"),
+        away_injuries=data.get("away_injuries"),
     )
 
     if "error" in result:
@@ -213,7 +239,9 @@ def handle_predict_game(data):
     result = predict_matchup(
         data.get("home_team", ""),
         data.get("away_team", ""),
-        model, scaler_mean, scaler_scale, team_stats,
+        model, scaler_mean, scaler_scale, team_stats, player_stats,
+        home_injuries=data.get("home_injuries"),
+        away_injuries=data.get("away_injuries"),
     )
 
     if "error" in result:

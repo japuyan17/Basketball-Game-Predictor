@@ -67,6 +67,12 @@ def print_prediction(result, away_stats, home_stats):
     tier   = confidence_label(home_prob)
     print(f"  Predicted winner : {winner}  ({conf:.1%} — {tier})")
 
+    adjustments = result.get("adjustments", [])
+    if adjustments:
+        print()
+        for line in adjustments:
+            print(line)
+
     if away_stats and home_stats:
         print_stats_comparison(away_stats, home_stats, away, home)
 
@@ -127,9 +133,24 @@ def main():
     away_input = input("Enter away team name or abbreviation: ").strip()
     home_input = input("Enter home team name or abbreviation: ").strip()
 
+    away_out_raw = input(
+        f"Any {away_input} players out? (comma-separated, or Enter to skip): "
+    ).strip()
+    home_out_raw = input(
+        f"Any {home_input} players out? (comma-separated, or Enter to skip): "
+    ).strip()
+
+    away_injuries = [p.strip() for p in away_out_raw.split(",") if p.strip()]
+    home_injuries = [p.strip() for p in home_out_raw.split(",") if p.strip()]
+
     resp = requests.post(
         f"{SERVER_URL}/predict",
-        json={"home_team": home_input, "away_team": away_input},
+        json={
+            "home_team":     home_input,
+            "away_team":     away_input,
+            "home_injuries": home_injuries or None,
+            "away_injuries": away_injuries or None,
+        },
         timeout=5,
     )
     result = resp.json()

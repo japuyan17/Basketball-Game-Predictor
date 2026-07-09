@@ -180,6 +180,8 @@ def save_latest_team_stats(df):
           .first()
           .reset_index()
     )
+    # ppg, plus_minus_avg, opp_ppg, off_efficiency are read by injury_adjust.py
+    # at inference time — do not remove or rename them (see Lessons.md #12).
     keep = [
         "TEAM_ID", "TEAM_NAME", "TEAM_ABBREVIATION",
         "win_pct", "ppg", "opp_ppg", "plus_minus_avg",
