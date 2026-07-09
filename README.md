@@ -61,11 +61,13 @@ Base URL: `http://localhost:5000`
   ]
 }
 ```
+
 ---
 
 ## How it Works
 
-We take the 19 features, see `features.md`, and then we train a logistic regression model that learns different aspects of what makes a team a winner, offensive rating, defensive rating, turnover rate, etc. By doing this our model is able to predict games and give a percentage chance, confidence score, of the winner of a certain game the user inputs.
+We take the 19 features (see `features.md`) and train a 3-layer neural network (MLP) that learns what makes a team a winner — offensive rating, defensive rating, turnover rate, home/away splits, and more. The model outputs a probability between 0 and 1, which becomes the confidence score for the predicted winner.
+
 ---
 
 ## Injury Adjustments
