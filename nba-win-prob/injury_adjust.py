@@ -1,9 +1,22 @@
 import time
+from datetime import date
+
 import pandas as pd
 from nba_api.stats.endpoints import LeagueDashPlayerStats
 
-CURRENT_SEASON = "2024-25"
-PPG_FLOOR      = 70.0   # minimum adjusted ppg to prevent nonsensical values
+PPG_FLOOR = 70.0   # minimum adjusted ppg to prevent nonsensical values
+
+
+# ── Determine the current NBA season string from today's date ─────────────────
+def current_season():
+    """Returns the current NBA season string (e.g. '2025-26') based on today."""
+    today = date.today()
+    # New seasons start in October; before that we're still in last year's
+    start_year = today.year if today.month >= 10 else today.year - 1
+    return f"{start_year}-{str(start_year + 1)[-2:]}"
+
+
+CURRENT_SEASON = current_season()
 
 
 # ── Fetch season-wide player stats from nba_api ───────────────────────────────
@@ -12,7 +25,7 @@ def fetch_player_stats(season=CURRENT_SEASON):
     time.sleep(0.6)   # rate limit
     raw = LeagueDashPlayerStats(
         season=season,
-        per_mode_simple="Totals",
+        per_mode_detailed="Totals",
         league_id_nullable="00",
     ).get_data_frames()[0]
 
