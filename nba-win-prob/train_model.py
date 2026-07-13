@@ -40,7 +40,7 @@ LEARNING_RATE = 1e-4
 VAL_SPLIT     = 0.2
 RANDOM_SEED      = 42
 LABEL_SMOOTHING  = 0.1   # smooths 0→0.05, 1→0.95 to prevent overconfidence
-# PATIENCE      = 20
+PATIENCE         = 20    # stop after this many epochs with no val-loss improvement
 
 # Injury adjustments are NOT applied during training — they happen at inference
 # time in injury_adjust.py. The model learns from clean historical team stats.
@@ -124,10 +124,11 @@ def train(model, train_dl, val_dl, optimizer, criterion, scheduler):
     """
     train_losses      = []
     val_losses        = []
-    best_val_loss = float("inf")
+    best_val_loss     = float("inf")
+    epochs_no_improve = 0
 
     print(f"\n[TRAINING] {EPOCHS} epochs, batch {BATCH_SIZE}, "
-          f"lr {LEARNING_RATE} (early stopping disabled)...")
+          f"lr {LEARNING_RATE}, patience {PATIENCE}...")
     print(f"  {'Epoch':>5}  {'Train Loss':>10}  {'Val Loss':>10}  "
           f"{'LR':>8}  {'Saved':>6}")
     print(f"  {'-'*5}  {'-'*10}  {'-'*10}  {'-'*8}  {'-'*6}")
@@ -169,21 +170,24 @@ def train(model, train_dl, val_dl, optimizer, criterion, scheduler):
             # ── Checkpoint ────────────────────────────────────────────────────
             saved = ""
             if val_loss < best_val_loss:
-                best_val_loss = val_loss
+                best_val_loss     = val_loss
+                epochs_no_improve = 0
                 torch.save(model.state_dict(), MODEL_PATH)
                 saved = "saved"
+            else:
+                epochs_no_improve += 1
 
             print(
                 f"  {epoch:>5}  {train_loss:>10.4f}  "
                 f"{val_loss:>10.4f}  {current_lr:>8.2e}  {saved:>6}"
             )
 
-            # if epochs_no_improve >= PATIENCE:
-            #     print(
-            #         f"\n  [EARLY STOP] No improvement for {PATIENCE} epochs. "
-            #         f"Stopping at epoch {epoch}."
-            #     )
-            #     break
+            if epochs_no_improve >= PATIENCE:
+                print(
+                    f"\n  [EARLY STOP] No improvement for {PATIENCE} epochs. "
+                    f"Stopping at epoch {epoch}."
+                )
+                break
 
     except KeyboardInterrupt:
         print("\n  [INTERRUPTED] Saving graphs from completed epochs...")

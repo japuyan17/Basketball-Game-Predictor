@@ -82,61 +82,7 @@ At the start of every session:
 
 End of session: summarize what was done, what's pending, and any open questions.
 
----
 
-## Active Projects
-
-### 1. Basketball Game Predictor
-**Repo:** `C:\Users\mason\OneDrive\Documents\GitHub\Basketball-Game-Predictor`
-**Goal:** Real-time NBA win probability — fetch play-by-play data, engineer features, train a PyTorch MLP, serve predictions via Flask REST + WebSocket.
-
-**Pipeline:** `fetch_data.py` → `build_features.py` → `train_model.py` → `server/app.py`
-
-**Tech stack:** `nba_api`, `pandas`, `PyTorch`, `scikit-learn`, `Flask`, `Flask-SocketIO`, `pyarrow`
-
-**Current phase:** Phase 1 (data fetch) — `fetch_data.py` not yet run. See checklist in vault: `Basketball/Basketball Game Predictor Checklist.md`.
-
-**Key rule:** `server/app.py` redefines `WinProbModel` — if the architecture in `train_model.py` changes, update the server copy too.
-
----
-
-### 2. Webstire (College Marketplace)
-**Goal:** Facebook Marketplace-style web app for college students to buy/sell used clothes locally. In-person meetup focus.
-
-**Key features:** Home feed with listings, seller profiles with ratings, messaging inbox, Browser Use AI for price suggestions.
-
-**Tech stack:** React (frontend), Python (backend), JavaScript.
-
-**Pages planned:** Home, Listing detail, Seller profile, Messaging.
-
----
-
-### 3. Trading Card Scanner
-**Repo:** TBD (monorepo planned)
-**Goal:** Scan trading cards with a camera, identify them via CV, pull market prices.
-
-**Tech stack:**
-- Backend: Python 3.11 + FastAPI + Uvicorn
-- Web: React + Vite + TypeScript
-- Mobile: React Native + Expo
-- DB: Postgres + pgvector
-- Cache: Redis
-- CV: OpenCV, Tesseract, CLIP
-- Deploy: Fly.io / Vercel / Expo EAS
-
-**CV pipeline:** Detect → OCR → embed (CLIP) → query card index
-
----
-
-### 4. Basketball Jumpshot AI (WIP)
-**Goal:** Computer vision model that recognizes Mason shooting, tracks makes/misses, analyzes form (release height, elbow position, foot alignment, ball spin, etc.), and gives session-by-session feedback.
-
-**Milestones:**
-1. Recognize Mason from images
-2. Detect when ball goes through the rim
-3. Track makes/misses per session
-4. Categorize shot types (pull-up, catch-and-shoot, fadeaway, etc.)
-5. Analyze and score form attributes per made shot
 
 ---
 
@@ -149,15 +95,3 @@ End of session: summarize what was done, what's pending, and any open questions.
 **UI/UX Designer** — Designs sleek, cohesive interfaces. Design should correlate with the app's purpose and flow well.
 
 ---
-
-## Obsidian Vault Reference
-
-Full notes, context, and design docs live at:
-`C:\Users\mason\OneDrive\Desktop\Claude network`
-
-Key folders:
-- `Claude/` — rules, coding style, startup script
-- `Basketball/` — predictor context, checklist, process
-- `Webstire/` — marketplace design
-- `Trading Card Scanner/` — architecture, pipeline, milestones
-- `AI Notes/` — ML fundamentals, LLMs, classification, neural nets
