@@ -190,8 +190,77 @@ body {
 /* ── Controls ──────────────────────────────────────────────────────────── */
 .controls {
   display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.control-row {
+  display: flex;
   gap: 12px;
   flex-wrap: wrap;
+}
+
+.control-field {
+  flex: 1;
+  min-width: 200px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.control-label {
+  font-size: 0.75rem;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.control-input {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #21262d;
+  color: var(--text);
+  font-size: 0.95rem;
+  font-family: inherit;
+}
+
+.control-input:focus {
+  outline: none;
+  border-color: var(--home-bright);
+}
+
+.control-row--buttons {
+  margin-top: 4px;
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ── Error banner ──────────────────────────────────────────────────────── */
+.error-banner {
+  border-color: var(--away);
+  color: #e8a793;
+  font-size: 0.95rem;
+}
+
+/* ── Prediction verdict ────────────────────────────────────────────────── */
+.verdict-line {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.adjustments {
+  margin: 12px 0 0;
+  padding-left: 20px;
+  color: var(--text-dim);
+  font-size: 0.9rem;
+}
+
+.adjustments li {
+  margin-top: 4px;
 }
 
 .btn {
