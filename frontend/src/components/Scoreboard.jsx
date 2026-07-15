@@ -34,7 +34,9 @@ export default function Scoreboard({
 }
 
 // Converts a numeric period into a readable label (Q1-Q4, OT, 2OT, ...).
+// A null period means the game hasn't started (pre-game prediction view).
 function formatPeriod(period) {
+  if (period == null) return "PRE";
   if (period <= 4) return `Q${period}`;
   const overtimeNumber = period - 4;
   return overtimeNumber === 1 ? "OT" : `${overtimeNumber}OT`;

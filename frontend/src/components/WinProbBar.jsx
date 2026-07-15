@@ -3,8 +3,10 @@
 // the same colors as the matplotlib charts in train_model.py.
 export default function WinProbBar({ homeTeam, awayTeam, homeProb, awayProb }) {
   // Convert 0-1 probabilities into whole-percent values for display + width.
+  // Away is derived from home so the two always sum to exactly 100 and the
+  // bar can never overflow (Lessons.md #4).
   const homePercent = Math.round(homeProb * 100);
-  const awayPercent = Math.round(awayProb * 100);
+  const awayPercent = 100 - homePercent;
 
   return (
     <section className="winprob card">

@@ -10,6 +10,7 @@ from flask_socketio import SocketIO, emit
 # Allow importing from the parent nba-win-prob directory
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from injury_adjust import fetch_player_stats, apply_injury_adjustments
+from Translator import parse_predict_request, build_prediction_response
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 _DIR            = os.path.dirname(os.path.abspath(__file__))
@@ -168,7 +169,19 @@ def predict_matchup(home_name, away_name, model, scaler_mean, scaler_scale,
 app      = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
+MAX_BODY_BYTES = 10_000   # predict payloads are tiny; anything bigger is abuse
+
 model, scaler_mean, scaler_scale, team_stats, player_stats = load_assets()
+
+
+# ── Middleware: basic request hygiene before any route runs ───────────────────
+@app.before_request
+def validate_request_shape():
+    """Rejects oversized bodies and non-JSON POSTs before they reach a route."""
+    if request.content_length and request.content_length > MAX_BODY_BYTES:
+        return jsonify({"error": "Request body too large"}), 413
+    if request.method == "POST" and not request.is_json:
+        return jsonify({"error": "Content-Type must be application/json"}), 415
 
 
 # ── POST /predict ─────────────────────────────────────────────────────────────
@@ -179,23 +192,21 @@ def http_predict():
     Body: { "home_team": "Lakers", "away_team": "Celtics" }
     Returns home and away win probabilities.
     """
-    data = request.get_json()
-    if not data or "home_team" not in data or "away_team" not in data:
-        return jsonify(
-            {"error": "Body must include 'home_team' and 'away_team'"}
-        ), 400
+    payload, error = parse_predict_request(request.get_json(silent=True))
+    if error:
+        return jsonify({"error": error}), 400
 
     result = predict_matchup(
-        data["home_team"], data["away_team"],
+        payload["home_team"], payload["away_team"],
         model, scaler_mean, scaler_scale, team_stats, player_stats,
-        home_injuries=data.get("home_injuries"),
-        away_injuries=data.get("away_injuries"),
+        home_injuries=payload["home_injuries"],
+        away_injuries=payload["away_injuries"],
     )
 
     if "error" in result:
         return jsonify(result), 404
 
-    return jsonify(result)
+    return jsonify(build_prediction_response(result))
 
 
 # ── GET /health ───────────────────────────────────────────────────────────────
@@ -236,18 +247,22 @@ def handle_predict_game(data):
     Listens for a 'predict_game' event and emits a 'prediction' event back.
     Expected payload: { "home_team": "Lakers", "away_team": "Celtics" }
     """
+    payload, error = parse_predict_request(data)
+    if error:
+        emit("error", {"message": error})
+        return
+
     result = predict_matchup(
-        data.get("home_team", ""),
-        data.get("away_team", ""),
+        payload["home_team"], payload["away_team"],
         model, scaler_mean, scaler_scale, team_stats, player_stats,
-        home_injuries=data.get("home_injuries"),
-        away_injuries=data.get("away_injuries"),
+        home_injuries=payload["home_injuries"],
+        away_injuries=payload["away_injuries"],
     )
 
     if "error" in result:
         emit("error", {"message": result["error"]})
     else:
-        emit("prediction", result)
+        emit("prediction", build_prediction_response(result))
 
 
 # ── WebSocket: connect / disconnect ──────────────────────────────────────────
