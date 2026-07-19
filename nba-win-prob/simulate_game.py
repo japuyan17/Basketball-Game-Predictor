@@ -69,7 +69,7 @@ def print_prediction(result, away_stats, home_stats):
 
     adjustments = result.get("adjustments", [])
     if adjustments:
-        print()
+        print("\n  Injuries applied (auto-detected + manual):")
         for line in adjustments:
             print(line)
 
@@ -133,11 +133,15 @@ def main():
     away_input = input("Enter away team name or abbreviation: ").strip()
     home_input = input("Enter home team name or abbreviation: ").strip()
 
+    print(
+        "\nOut players are auto-detected from the live injury report. "
+        "Add any extras below (or press Enter to skip)."
+    )
     away_out_raw = input(
-        f"Any {away_input} players out? (comma-separated, or Enter to skip): "
+        f"Additional {away_input} players out? (comma-separated): "
     ).strip()
     home_out_raw = input(
-        f"Any {home_input} players out? (comma-separated, or Enter to skip): "
+        f"Additional {home_input} players out? (comma-separated): "
     ).strip()
 
     away_injuries = [p.strip() for p in away_out_raw.split(",") if p.strip()]
