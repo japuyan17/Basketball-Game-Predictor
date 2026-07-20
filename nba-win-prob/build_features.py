@@ -127,12 +127,17 @@ def build_matchups(df):
     home = df[df["MATCHUP"].str.contains(r"vs\.", regex=True)].copy()
     away = df[df["MATCHUP"].str.contains(r"@",    regex=True)].copy()
 
+    # NOTE: "PLUS_MINUS" here is the raw per-game final score margin (not the
+    # rolling plus_minus_avg). Only the home side is kept, renamed to
+    # "home_margin" below. It is NEVER added to FEATURE_COLS — it exists
+    # solely for spread calibration in calibrate_spread.py and must not be
+    # fed into the model (that would be a leakage bug: it's the game result).
     stat_cols = [
         "GAME_ID", "GAME_DATE", "TEAM_NAME", "TEAM_ABBREVIATION",
         "win", "win_pct", "ppg", "opp_ppg", "plus_minus_avg",
         "last10_win_pct", "home_game_win_pct", "away_game_win_pct",
         "away_ppg", "home_ppg",
-        "off_efficiency", "tov_rate", "games_played",
+        "off_efficiency", "tov_rate", "games_played", "PLUS_MINUS",
     ]
 
     matchups = home[stat_cols].merge(
@@ -152,7 +157,11 @@ def build_matchups(df):
         # how many points each team scores in their non-native venue
         "away_ppg_home":          "home_team_away_ppg",
         "home_ppg_away":          "away_team_home_ppg",
+        # actual final score margin (home - away) — calibration only, not a feature
+        "PLUS_MINUS_home":        "home_margin",
     })
+
+    matchups = matchups.drop(columns=["PLUS_MINUS_away"])
 
     # Net rating differential: positive = home team is better
     matchups["net_rtg_diff"] = (

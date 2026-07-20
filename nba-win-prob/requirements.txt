@@ -8,3 +8,5 @@ matplotlib==3.9.0
 pyarrow==16.1.0
 python-socketio[client]==5.11.3
 eventlet==0.36.1
+python-dotenv==1.0.1
+requests==2.32.3

@@ -67,6 +67,11 @@ def print_prediction(result, away_stats, home_stats):
     tier   = confidence_label(home_prob)
     print(f"  Predicted winner : {winner}  ({conf:.1%} — {tier})")
 
+    margin = result.get("home_margin")
+    if margin is not None:
+        favored, by = (home, margin) if margin >= 0 else (away, -margin)
+        print(f"  Predicted spread : {favored} by {by:.1f}")
+
     adjustments = result.get("adjustments", [])
     if adjustments:
         print("\n  Injuries applied (auto-detected + manual):")

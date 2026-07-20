@@ -96,6 +96,15 @@ export default function App() {
                 ({Math.round(winnerProb * 100)}% —{" "}
                 {confidenceLabel(prediction.homeProb)})
               </p>
+              {prediction.homeMargin != null && (
+                <p className="verdict-line verdict-line--spread">
+                  Predicted spread:{" "}
+                  <strong>
+                    {prediction.homeMargin >= 0 ? prediction.homeTeam : prediction.awayTeam}{" "}
+                    by {Math.abs(prediction.homeMargin).toFixed(1)}
+                  </strong>
+                </p>
+              )}
               {prediction.adjustments.length > 0 && (
                 <ul className="adjustments">
                   {prediction.adjustments.map((line) => (

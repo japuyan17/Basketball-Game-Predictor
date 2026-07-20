@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+from scipy.stats import norm
 from flask import Flask, request, jsonify
 from flask_socketio import SocketIO, emit
 
@@ -16,8 +17,10 @@ from Translator import parse_predict_request, build_prediction_response
 _DIR            = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH      = os.path.join(_DIR, "..", "..", "models", "best_model.pt")
 SCALER_PATH     = os.path.join(_DIR, "..", "..", "models", "scaler.npy")
+SIGMA_PATH      = os.path.join(_DIR, "..", "..", "models", "spread_sigma.npy")
 TEAM_STATS_PATH = os.path.join(_DIR, "..", "..", "data",   "team_stats_latest.parquet")
 PORT            = 5000
+PROB_EPS        = 1e-4   # clip win prob away from 0/1 before norm.ppf (avoids ±inf)
 
 FEATURE_COLS = [
     "win_pct_home",        "ppg_home",
@@ -74,14 +77,25 @@ def load_assets():
 
     team_stats = pd.read_parquet(TEAM_STATS_PATH)
 
+    spread_sigma = None
+    if os.path.exists(SIGMA_PATH):
+        spread_sigma = float(np.load(SIGMA_PATH)[0])
+
     print(f"[MODEL]  Loaded from {MODEL_PATH}")
     print(f"[SCALER] Loaded from {SCALER_PATH}")
+    if spread_sigma is not None:
+        print(f"[SPREAD] sigma={spread_sigma:.2f} loaded from {SIGMA_PATH}")
+    else:
+        print(
+            f"[SPREAD] {SIGMA_PATH} not found — spreads disabled. "
+            "Run calibrate_spread.py to enable them."
+        )
     print(f"[TEAMS]  {len(team_stats)} teams loaded")
     print("[PLAYERS] Fetching current player stats from nba_api...")
     player_stats = fetch_player_stats()
     print(f"[PLAYERS] {len(player_stats)} players loaded")
 
-    return model, scaler_mean, scaler_scale, team_stats, player_stats
+    return model, scaler_mean, scaler_scale, team_stats, player_stats, spread_sigma
 
 
 # ── Fuzzy team name lookup ────────────────────────────────────────────────────
@@ -118,13 +132,28 @@ def build_feature_vector(home_row, away_row, scaler_mean, scaler_scale):
     return (raw - scaler_mean) / scaler_scale
 
 
+# ── Convert a win probability into a point spread ─────────────────────────────
+def prob_to_spread(prob, sigma):
+    """
+    Converts P(home win) into a predicted home margin using the standard
+    sports-analytics relation spread = sigma * norm.ppf(win_prob), where sigma
+    is the fitted standard deviation of game margins (see calibrate_spread.py).
+    Returns None if no sigma has been calibrated yet.
+    """
+    if sigma is None:
+        return None
+    clipped = min(max(prob, PROB_EPS), 1 - PROB_EPS)
+    return round(sigma * norm.ppf(clipped), 1)
+
+
 # ── Core prediction logic ─────────────────────────────────────────────────────
 def predict_matchup(home_name, away_name, model, scaler_mean, scaler_scale,
                     team_stats, player_stats=None,
-                    home_injuries=None, away_injuries=None):
+                    home_injuries=None, away_injuries=None, spread_sigma=None):
     """
     Looks up both teams, optionally adjusts stats for injured players,
-    builds the scaled feature vector, runs inference, and returns win probs.
+    builds the scaled feature vector, runs inference, and returns win probs
+    plus a predicted point spread (home_margin: positive = home favored).
     """
     home_row = find_team(home_name, team_stats)
     away_row = find_team(away_name, team_stats)
@@ -161,6 +190,7 @@ def predict_matchup(home_name, away_name, model, scaler_mean, scaler_scale,
         "away_team":      away_row["TEAM_NAME"],
         "home_win_prob":  round(prob, 4),
         "away_win_prob":  round(1 - prob, 4),
+        "home_margin":    prob_to_spread(prob, spread_sigma),
         "adjustments":    adjustment_log,
     }
 
@@ -171,7 +201,7 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 MAX_BODY_BYTES = 10_000   # predict payloads are tiny; anything bigger is abuse
 
-model, scaler_mean, scaler_scale, team_stats, player_stats = load_assets()
+model, scaler_mean, scaler_scale, team_stats, player_stats, spread_sigma = load_assets()
 
 
 # ── Middleware: basic request hygiene before any route runs ───────────────────
@@ -201,6 +231,7 @@ def http_predict():
         model, scaler_mean, scaler_scale, team_stats, player_stats,
         home_injuries=payload["home_injuries"],
         away_injuries=payload["away_injuries"],
+        spread_sigma=spread_sigma,
     )
 
     if "error" in result:
@@ -214,10 +245,11 @@ def http_predict():
 def health():
     """Returns server status and number of teams available."""
     return jsonify({
-        "status":       "ok",
-        "model":        "mlp_pytorch_3layer",
-        "features":     N_FEATURES,
-        "teams_loaded": len(team_stats),
+        "status":         "ok",
+        "model":          "mlp_pytorch_3layer",
+        "features":       N_FEATURES,
+        "teams_loaded":   len(team_stats),
+        "spread_enabled": spread_sigma is not None,
     })
 
 
@@ -257,6 +289,7 @@ def handle_predict_game(data):
         model, scaler_mean, scaler_scale, team_stats, player_stats,
         home_injuries=payload["home_injuries"],
         away_injuries=payload["away_injuries"],
+        spread_sigma=spread_sigma,
     )
 
     if "error" in result:

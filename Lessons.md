@@ -153,3 +153,69 @@ Format: each entry = the problem, the fix, and the rule to follow going forward.
   `injury_adjust.py`. Any change to columns saved in `team_stats_latest.parquet`
   must be checked against what `apply_injury_adjustments()` reads. Add a comment
   near the `keep` list in `save_latest_team_stats()` if a column is injury-critical.
+
+## 13. `LeagueDashPlayerStats` uses `per_mode_detailed`, not `per_mode_simple`
+
+- **Problem:** `injury_adjust.py` called `LeagueDashPlayerStats(
+  per_mode_simple="Totals", ...)` and crashed with `TypeError:
+  LeagueDashPlayerStats.__init__() got an unexpected keyword argument
+  'per_mode_simple'`.
+- **Fix:** Checked the endpoint's real `__init__` signature with
+  `inspect.signature()` — the correct kwarg is `per_mode_detailed`.
+- **Rule:** When an nba_api endpoint call raises `TypeError` on a kwarg,
+  don't guess the fix — run
+  `python -c "from nba_api.stats.endpoints import X; import inspect; \
+  print(list(inspect.signature(X.__init__).parameters))"` to get the exact
+  accepted names before changing the call.
+
+## 14. Never hardcode an NBA season string — derive it from today's date
+
+- **Problem:** `injury_adjust.py` had `CURRENT_SEASON = "2024-25"` hardcoded.
+  Once the season rolled over, this showed traded/retired players on their
+  old team (e.g. Kevin Durant listed on PHX after moving to HOU) because the
+  player stats were being pulled from a stale season.
+- **Fix:** Added `current_season()` — computes the season string from
+  `date.today()` (NBA seasons start in October, so before October the current
+  year still belongs to last year's season string).
+- **Rule:** Any code that needs "the current NBA season" must call
+  `current_season()` rather than hardcoding a string. Never hardcode a season
+  year anywhere in the pipeline.
+
+## 15. Auxiliary columns for calibration must never enter `FEATURE_COLS`
+
+- **What changed:** Added `home_margin` (the actual final score differential)
+  to `matchup_features.parquet` in `build_features.py`, purely so
+  `calibrate_spread.py` can fit a win-probability-to-point-spread conversion
+  against real historical margins.
+- **Why this is safe:** `home_margin` is the game's actual result — feeding
+  it into the model as a feature would be direct label leakage (the model
+  would be given the answer). It's read only by `calibrate_spread.py`, after
+  training, never during `train_model.py`.
+- **Rule:** Any column added to `matchup_features.parquet` for analysis or
+  calibration (not model input) must be explicitly excluded from
+  `FEATURE_COLS` in all three files (Lesson 9), and should carry a comment at
+  its definition site explaining why it's not a feature.
+
+## 16. Third-party API keys: `.env` + `python-dotenv`, never hardcoded
+
+- **What changed:** `vegas_odds.py` reads `ODDS_API_KEY` via
+  `os.environ.get()` after `load_dotenv()`. A `.env.example` template (no
+  real key) is committed at the project root; `.env` itself is gitignored.
+- **Why:** Matches the project's backend rule — never hardcode API keys.
+  Keeps the real key out of git history entirely, including old commits.
+- **Rule:** Any new external API integration must: (1) load its key via
+  `python-dotenv` from `.env`, (2) raise a clear `RuntimeError` with signup
+  instructions if the key is missing, (3) add a placeholder line to
+  `.env.example`, never to `.env`.
+
+## 17. PrizePicks has no point-spread market — don't expect it from odds APIs
+
+- **Problem:** Asked to fetch spreads from DraftKings, FanDuel, and
+  PrizePicks. PrizePicks is a DFS pick'em platform, not a licensed
+  sportsbook — it doesn't publish traditional point spreads, and The Odds
+  API (and similar odds aggregators) don't list it as a bookmaker.
+- **Fix:** `vegas_odds.py` only requests `bookmakers=["draftkings",
+  "fanduel"]`, with a comment explaining PrizePicks' exclusion.
+- **Rule:** Before wiring up a new sportsbook/platform, confirm it actually
+  offers the market type needed (spreads vs. player props vs. pick'em
+  multipliers) — DFS platforms often don't map onto traditional odds data.
