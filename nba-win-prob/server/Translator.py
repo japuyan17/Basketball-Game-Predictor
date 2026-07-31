@@ -86,5 +86,6 @@ def build_prediction_response(result):
         "awayTeam":    result["away_team"],
         "homeProb":    result["home_win_prob"],
         "awayProb":    result["away_win_prob"],
+        "homeMargin":  result.get("home_margin"),   # None if spread not calibrated
         "adjustments": [line.strip() for line in result.get("adjustments", [])],
     }

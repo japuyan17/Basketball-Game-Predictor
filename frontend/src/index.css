@@ -252,6 +252,12 @@ body {
   font-size: 1.05rem;
 }
 
+.verdict-line--spread {
+  margin-top: 6px;
+  color: var(--text-dim);
+  font-size: 0.95rem;
+}
+
 .adjustments {
   margin: 12px 0 0;
   padding-left: 20px;
