@@ -81,3 +81,53 @@ startup. Multiple injured players stack — each deduction is applied in sequenc
 
 Player names are matched via case-insensitive substring search. Unrecognized names are
 logged and skipped without crashing.
+
+---
+
+## Predicted Point Spread
+
+Handled by `nba-win-prob/calibrate_spread.py`. Converts the model's win probability into a
+point spread using the standard sports-analytics relation:
+
+```
+spread = sigma × Φ⁻¹(win_prob)
+```
+
+`sigma` (the standard deviation of NBA game margins) is fit once via closed-form least
+squares against real historical margins (`home_margin`, the actual final score
+differential — added to `matchup_features.parquet` for this purpose only). `home_margin`
+is **never** added to `FEATURE_COLS` — using the game's actual result as a model input
+would be direct label leakage. See `Lessons.md` entry 15.
+
+`sigma` is saved to `models/spread_sigma.npy` and loaded by `server/app.py` at startup. If
+it's missing, `/predict` still works — `home_margin` in the response is simply `null` until
+`calibrate_spread.py` has been run once.
+
+**Run order:** `build_features.py` → `train_model.py` → `calibrate_spread.py`. Re-run
+`calibrate_spread.py` any time the model is retrained.
+
+---
+
+## Vegas Odds (DraftKings / FanDuel)
+
+Handled by `nba-win-prob/vegas_odds.py`. Fetches live NBA point spreads from
+[The Odds API](https://the-odds-api.com), scoped to `draftkings` and `fanduel` specifically
+(not a blanket "all US books" pull). Each game returns a per-bookmaker breakdown plus an
+average:
+
+```json
+{
+  "home_team": "Boston Celtics",
+  "away_team": "Los Angeles Lakers",
+  "spreads": { "draftkings": -4.5, "fanduel": -4.0 },
+  "home_spread_avg": -4.25,
+  "num_books": 2
+}
+```
+
+PrizePicks is intentionally excluded — it's a DFS pick'em platform without a traditional
+point-spread market, and isn't listed as a bookmaker by The Odds API. See `Lessons.md`
+entry 17.
+
+Requires `ODDS_API_KEY` in a project-root `.env` file (see `.env.example`). Never commit
+`.env` — it's gitignored. See `Lessons.md` entry 16.
